@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src * data: blob: file:; media-src *; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'none'">
+<title>ModHaven</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="titlebar">
+  <div class="brand"><svg viewBox="0 0 32 32" class="logo"><defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="var(--accent)"/><stop offset="1" stop-color="var(--accent-2)"/></linearGradient></defs><path d="M16 2 28 9v14L16 30 4 23V9z" fill="url(#lg)"/><path d="M10 12l6-3.5 6 3.5v8l-6 3.5-6-3.5z" fill="none" stroke="#fff" stroke-width="2" stroke-linejoin="round"/><path d="M16 15.5v8M10 12l6 3.5 6-3.5" fill="none" stroke="#fff" stroke-width="2" stroke-linejoin="round"/></svg><span>ModHaven</span></div>
+  <div id="crumbs"></div>
+  <div id="titleStatus"></div>
+</div>
+<div id="shell">
+  <nav id="sidebar">
+    <div class="navgroup">
+      <button class="nav" data-view="games"><svg viewBox="0 0 24 24"><path d="M6 8h12a4 4 0 0 1 4 4v1a4 4 0 0 1-7 2.6L14 15h-4l-1 .6A4 4 0 0 1 2 13v-1a4 4 0 0 1 4-4z"/><path d="M7 11v3M5.5 12.5h3M16 12h.01M18 13.5h.01"/></svg><span>Games</span></button>
+      <button class="nav" data-view="downloads"><svg viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M4 19h16"/></svg><span>Downloads</span><b class="count" id="dlCount" hidden></b></button>
+      <button class="nav" data-view="settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg><span>Settings</span></button>
+    </div>
+    <div class="navlabel">Your games</div>
+    <div id="myGames"></div>
+    <div class="sidefoot" id="sideFoot"></div>
+  </nav>
+  <main id="main">
+    <section class="view" id="view-games"></section>
+    <section class="view" id="view-game"></section>
+    <section class="view" id="view-downloads"></section>
+    <section class="view" id="view-settings"></section>
+  </main>
+</div>
+<div id="modalRoot"></div>
+<div id="toasts"></div>
+<div id="tip" role="tooltip"></div>
+<div id="dropHint"><div>Drop mod files to install them into this profile</div></div>
+<script src="vendor/marked.js"></script>
+<script src="vendor/purify.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ModHaven</title>
+<link rel="icon" href="icon.png">
+<style>
+  :root { --bg: #0f1117; --surface: #171a24; --border: #2a3042; --text: #eceef6; --dim: #a3abbf; --accent: #7c5cff; }
+  @media (prefers-color-scheme: light) { :root { --bg: #f3f4f8; --surface: #fff; --border: #dde1ea; --text: #161a26; --dim: #4b5366; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.6 "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 980px; margin: 0 auto; padding: 48px 16px 64px; }
+  header { display: flex; align-items: center; gap: 16px; }
+  header img { width: 56px; height: 56px; }
+  h1 { margin: 0; font-size: 34px; letter-spacing: -.5px; }
+  .lead { color: var(--dim); font-size: 18px; margin: 12px 0 28px; }
+  h2 { margin: 40px 0 10px; font-size: 21px; }
+  ul { padding-left: 20px; } li { margin: 4px 0; }
+  figure { margin: 18px 0; } figure img { width: 100%; border-radius: 12px; border: 1px solid var(--border); display: block; }
+  figcaption { color: var(--dim); font-size: 14px; margin-top: 6px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 20px; }
+  a { color: var(--accent); }
+  table { border-collapse: collapse; width: 100%; } td, th { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 15px; }
+  footer { margin-top: 48px; color: var(--dim); font-size: 14px; }
+</style>
+</head>
+<body>
+<main>
+  <header><img src="icon.png" alt=""><div><h1>ModHaven</h1></div></header>
+  <p class="lead">A free desktop mod manager for Windows. It lists, installs and updates mods from several mod sites in one place, with profiles and crash tracking. It is a personal, non-commercial hobby project.</p>
+
+  <figure><img src="games.png" alt="ModHaven game library"><figcaption>Game library: games from every supported site, with the ones installed on this PC first.</figcaption></figure>
+
+  <h2>What it does</h2>
+  <ul>
+    <li>Browse a game's mods from Thunderstore, Modrinth, GameBanana, Nexus Mods and CurseForge in one list. Each mod shows which site it comes from, along with its description, version and last update.</li>
+    <li>Install mods into profiles, with dependencies resolved automatically, and keep them up to date.</li>
+    <li>Detect mods the user installed by hand and match them to their site page so they can be updated.</li>
+    <li>Record every launch. When the game crashes, it saves the logs and narrows down which mod, or pair of mods, causes the crash.</li>
+  </ul>
+
+  <figure><img src="browse.png" alt="Browsing mods"><figcaption>Mod browser: one list from several sites, with full details for the selected mod.</figcaption></figure>
+
+  <h2>How it uses the CurseForge API</h2>
+  <div class="card">
+    <p>ModHaven runs on the user's own PC and calls the CurseForge REST API directly. It sends the <code>x-api-key</code> header and makes only these read requests:</p>
+    <table>
+      <tr><th>Purpose</th><th>Endpoints</th></tr>
+      <tr><td>List supported games</td><td><code>GET /v1/games</code></td></tr>
+      <tr><td>Search and browse mods for a game</td><td><code>GET /v1/mods/search</code>, <code>GET /v1/categories</code></td></tr>
+      <tr><td>Mod details, description and files</td><td><code>GET /v1/mods/{id}</code>, <code>/description</code>, <code>/files</code></td></tr>
+      <tr><td>Download a file the user chose to install</td><td><code>GET /v1/mods/{id}/files/{fileId}/download-url</code></td></tr>
+      <tr><td>Recognise mods already on disk</td><td><code>POST /v1/fingerprints/{gameId}</code></td></tr>
+    </table>
+    <p>Results are cached locally to keep request volume low. Files are downloaded only when the user installs or updates a mod. Mods whose authors have disabled third-party distribution are never downloaded; ModHaven opens their CurseForge page instead. Mod names, authors and links are shown as they appear on CurseForge, and every mod links back to its CurseForge page. Nothing is redistributed or mirrored.</p>
+  </div>
+
+  <figure><img src="crash.png" alt="Crash center"><figcaption>Crash center: launch history and the conflict map between mods.</figcaption></figure>
+
+  <h2>Source</h2>
+  <p>The source code is in this repository. ModHaven is built with Electron and runs on Windows.</p>
+  <footer>ModHaven is not affiliated with CurseForge, Overwolf, Thunderstore, Modrinth, GameBanana or Nexus Mods.</footer>
+</main>
+</body>
+</html>

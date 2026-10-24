@@ -1,0 +1,23 @@
+{
+  "name": "modhaven",
+  "productName": "ModHaven",
+  "version": "1.0.0",
+  "description": "All-in-one mod manager: Thunderstore, Modrinth, GameBanana, CurseForge, Nexus Mods",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "test:sources": "node tools/test-sources.js",
+    "package": "node tools/package.js"
+  },
+  "license": "UNLICENSED",
+  "dependencies": {
+    "7zip-bin": "^5.2.0",
+    "adm-zip": "^0.5.16",
+    "dompurify": "^3.4.17",
+    "marked": "^15.0.12"
+  },
+  "devDependencies": {
+    "@electron/packager": "^18.3.6",
+    "electron": "^33.2.0"
+  }
+}
