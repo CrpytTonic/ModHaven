@@ -24,7 +24,7 @@ const uidOf = (sourceId, modId) => `${sourceId}:${modId}`;
 function pickVersion(versions, game, versionId) {
   if (versionId) return versions.find(v => String(v.id) === String(versionId)) || null;
   if (game.key === 'minecraft' && game.mcVersion) {
-    const fits = versions.filter(v => (!v.gameVersions.length || v.gameVersions.includes(game.mcVersion)) && (!game.mcLoader || !v.loaders || !v.loaders.length || v.loaders.includes(game.mcLoader)));
+    const fits = versions.filter(v => (!(v.gameVersions || []).length || v.gameVersions.includes(game.mcVersion)) && (!game.mcLoader || !v.loaders || !v.loaders.length || v.loaders.includes(game.mcLoader)));
     if (fits.length) return fits[0];
   }
   return versions[0] || null;
@@ -33,6 +33,8 @@ function pickVersion(versions, game, versionId) {
 // Installs (or switches version of) a mod into a profile. Returns {installed:[names], manual:[{name,pageUrl,reason}]}
 async function install(key, profileName, { source: sid, gameId, modId, versionId, dependencyOf = null, nxm = null }, seen = new Set()) {
   const game = games.get(key);
+  if (!game) throw new Error('Unknown game');
+  if (!games.profile(key, profileName)) throw new Error(`Profile "${profileName}" not found`);
   const s = source(sid);
   if (!s) throw new Error('Unknown source ' + sid);
   const uid = uidOf(sid, modId);
@@ -202,10 +204,14 @@ function refreshDeployed(key, profileName) {
 
 async function installFileFor(key, profileName, uid, filePath) {
   const game = games.get(key);
+  const before = (games.profile(key, profileName) || { mods: [] }).mods.find(m => m.uid === uid);
+  if (!before) throw new Error('Mod not found in this profile');
+  if (!filePath || !fs.existsSync(filePath)) throw new Error('That file is not there any more');
+  const staged = await installer.stageFileFor(game, before, filePath);
+  // Re-read after unpacking: other changes may have been saved meanwhile (an update check, a toggle).
   const p = games.profile(key, profileName);
-  const e = p.mods.find(m => m.uid === uid);
-  if (!e) throw new Error('Mod not found in this profile');
-  const staged = await installer.stageFileFor(game, e, filePath);
+  const e = p && p.mods.find(m => m.uid === uid);
+  if (!e) throw new Error('The mod was removed from this profile while the file was being unpacked');
   Object.assign(e, { versionId: staged.versionId, fileName: staged.fileName, rawLayout: false, version: e.latest && e.latest.version ? e.latest.version + ' (file)' : 'downloaded file',
     updatedLocallyAt: new Date().toISOString(), previousVersionId: e.versionId, modUpdatedAt: e.latest && e.latest.date ? e.latest.date : new Date().toISOString() });
   if (e.latest) e.versionId = staged.versionId; // keep "up to date" honest: compare by date below
@@ -217,8 +223,11 @@ async function installFileFor(key, profileName, uid, filePath) {
 
 async function installLocal(key, profileName, filePath) {
   const game = games.get(key);
+  if (!game) throw new Error('Unknown game');
+  if (!games.profile(key, profileName)) throw new Error(`Profile "${profileName}" not found`);
   const mod = await installer.stageLocal(game, filePath);
   const profile = games.profile(key, profileName);
+  if (!profile) throw new Error(`Profile "${profileName}" not found`);
   const uid = uidOf('local', mod.id);
   const entry = { uid, source: 'local', id: mod.id, gameId: '', name: mod.name, author: 'You', icon: null, url: null, version: 'local file', versionId: mod.versionId,
     fileName: mod.fileName, modUpdatedAt: new Date().toISOString(), gameVersions: [], enabled: true, order: profile.mods.length, installedAt: new Date().toISOString(), dependencyOf: [], pinned: true, notes: '' };
@@ -230,6 +239,7 @@ async function installLocal(key, profileName, filePath) {
 
 function uninstall(key, profileName, uid, { withDeps = true } = {}) {
   const profile = games.profile(key, profileName);
+  if (!profile) throw new Error(`Profile "${profileName}" not found`);
   const removed = [uid];
   profile.mods = profile.mods.filter(m => m.uid !== uid);
   if (withDeps) {
@@ -255,6 +265,7 @@ function uninstall(key, profileName, uid, { withDeps = true } = {}) {
 async function checkUpdates(key, profileName, { autoInstall } = {}) {
   const game = games.get(key);
   const profile = games.profile(key, profileName);
+  if (!game || !profile) throw new Error('Unknown game or profile');
   const auto = autoInstall ?? store.settings().autoUpdate;
   const updated = [], available = [], errors = [];
   const queue = profile.mods.filter(m => m.source !== 'local');
@@ -317,6 +328,8 @@ async function checkUpdates(key, profileName, { autoInstall } = {}) {
       }
       games.saveProfile(key, p);
       if (cur.latest && cur.versionGuess === 'exact file') { const lv = versions.find(x => String(x.id) === String(cur.latest.versionId)); if (lv) v = lv; }
+      // Decide on what is saved now (the user may have pinned / changed the mod while the sites answered).
+      m = { ...m, versionId: cur.versionId, modUpdatedAt: cur.modUpdatedAt, pinned: cur.pinned, autoUpdate: cur.autoUpdate, version: cur.version };
       const fromFile = String(m.versionId).startsWith('file-') && m.modUpdatedAt && v && v.date && v.date <= m.modUpdatedAt;
       // Never "update" a mod whose link looks wrong: it would replace the user's mod with a different one.
       const wrongLink = cur.versionGuess === 'mismatch';

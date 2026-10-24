@@ -24,15 +24,92 @@ function saveRun(key, r) {
   store.writeJson(runsFile(key), all.slice(0, 300));
 }
 
-// Processes whose exe lives in a folder: [{pid, path, start}]
-async function procsIn(dir, exeName) {
-  const ps = `Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and ($_.ExecutablePath -like '${dir.replace(/'/g, "''")}\\*' ${exeName ? `-or $_.Name -eq '${exeName.replace(/'/g, "''")}'` : ''}) } | ForEach-Object { "$($_.ProcessId)|$($_.ExecutablePath)" }`;
-  const out = await run('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps]);
-  return out.split(/\r?\n/).filter(Boolean).map(l => { const [pid, p] = l.split('|'); return { pid: Number(pid), path: p }; })
-    .filter(p => !/UnityCrashHandler|CrashReport|crashpad|EasyAntiCheat|BEService/i.test(p.path));
+// ---------- finding the game's processes (cheap: this runs while the user plays) ----------
+// The exe names that can be the game: the configured exe first, then the other .exe files in the
+// game folder (launcher -> game hand-offs). Read once per launch.
+const HELPER_EXE = /^(unins|UnityCrashHandler|CrashReport|crashpad|CrashSender|vc_?redist|dxsetup|dotnet|setup|createdump|EasyAntiCheat|BEService|QuickSFV|UE4PrereqSetup|UEPrereqSetup)/i;
+function gameExeNames(dir, exeName) {
+  const names = [];
+  const add = n => { if (n && !names.some(x => x.toLowerCase() === n.toLowerCase())) names.push(n); };
+  add(exeName);
+  if (!dir) return names;
+  let visited = 0;
+  const found = [];
+  const walk = (d, depth) => {
+    let ents = [];
+    try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      if (++visited > 4000) return;
+      if (e.isDirectory()) { if (depth < 4 && !/^(redist|_commonredist|directx|support|BepInEx|MelonLoader|Content|Paks|Saved|Data|mods)$/i.test(e.name)) walk(path.join(d, e.name), depth + 1); }
+      else if (/\.exe$/i.test(e.name) && !HELPER_EXE.test(e.name)) found.push({ n: e.name, depth, ship: /shipping|win64|game/i.test(e.name) });
+    }
+  };
+  walk(dir, 0);
+  found.sort((a, b) => b.ship - a.ship || a.depth - b.depth);
+  for (const f of found) add(f.n);
+  return names.slice(0, 8);
+}
+
+// Running pids by exe name. An image-name filter costs ~0.1 s of CPU, a full list ~0.6 s: filter for a
+// few names, list everything once for more.
+async function pidsByNames(names) {
+  const want = new Map(names.map(n => [n.toLowerCase(), n]));
+  const outs = names.length <= 4
+    ? await Promise.all(names.map(n => run('tasklist', ['/FI', `IMAGENAME eq ${n}`, '/FO', 'CSV', '/NH'], { timeout: 15000 })))
+    : [await run('tasklist', ['/FO', 'CSV', '/NH'], { timeout: 20000 })];
+  const res = [];
+  for (const out of outs) {
+    for (const l of out.split(/\r?\n/)) {
+      const m = l.match(/^"([^"]+)","(\d+)"/);
+      if (m && want.has(m[1].toLowerCase())) res.push({ name: want.get(m[1].toLowerCase()), pid: Number(m[2]) });
+    }
+  }
+  return res;
+}
+
+// Exe paths for a few pids (only asked when a new, not-yet-known process shows up).
+async function pathsOf(pids) {
+  if (!pids.length) return {};
+  const out = await run('powershell', ['-NoProfile', '-NonInteractive', '-Command', `Get-Process -Id ${pids.join(',')} -ErrorAction SilentlyContinue | ForEach-Object { "$($_.Id)|$($_.Path)" }`], { timeout: 20000 });
+  const res = {};
+  for (const l of out.split(/\r?\n/)) { const [pid, p] = l.split('|'); if (pid && /^\d+$/.test(pid.trim())) res[Number(pid)] = (p || '').trim(); }
+  return res;
+}
+
+// Still running? (signal 0 only checks; EPERM = exists but belongs to an elevated process)
+function alive(pid) {
+  try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
+}
+
+// Finds the game's processes: one of the game's exe names, running from the game folder (or the
+// configured exe's folder). Each new pid's path is looked up once; known pids are remembered.
+async function scanGame(s) {
+  const found = [];
+  const fresh = [];
+  const names = new Map();
+  for (const { pid, name } of await pidsByNames(s.exeNames)) {
+    if (s.known.has(pid)) { if (s.known.get(pid)) found.push(pid); } else { fresh.push(pid); names.set(pid, name); }
+  }
+  if (fresh.length) {
+    const paths = await pathsOf(fresh);
+    const dirs = [s.dir, s.game.exe && path.dirname(s.game.exe)].filter(Boolean).map(d => path.resolve(d).toLowerCase() + path.sep);
+    const inDir = p => dirs.some(d => path.resolve(p).toLowerCase().startsWith(d));
+    const psFailed = !Object.keys(paths).length;
+    // Empty path = an elevated process we can't look into; it has one of the game's exe names, so it counts.
+    for (const pid of fresh) {
+      // PowerShell not answering at all: fall back to the configured exe name (the old behaviour).
+      if (psFailed) { if (s.exeName && names.get(pid).toLowerCase() === s.exeName.toLowerCase()) found.push(pid); continue; }
+      if (!(pid in paths)) continue; // already gone: nothing to remember
+      const ok = !paths[pid] || inDir(paths[pid]);
+      s.known.set(pid, ok);
+      if (ok) found.push(pid);
+    }
+  }
+  return found;
 }
 
 const active = new Map(); // game key -> session
+const anyRunning = () => active.size > 0;
 
 function status(key) {
   const s = active.get(key);
@@ -40,27 +117,39 @@ function status(key) {
 }
 
 // opts: { profile (name) | vanilla:true, autoTestSeconds, mods override (array of uids for culprit search) }
+const starting = new Set(); // keys between "launch" and the session existing (blocks double starts)
 async function launch(key, opts = {}) {
-  if (active.has(key)) throw new Error('The game is already running');
-  const game = games.get(key);
+  if (active.has(key) || starting.has(key)) throw new Error('The game is already running');
+  starting.add(key);
+  try { return await launchNow(key, opts); } finally { starting.delete(key); }
+}
+async function launchNow(key, opts) {
+  let game = games.get(key);
   if (!game) throw new Error('Unknown game');
+  const viaStore = !!((game.launchVia === 'steam' && game.steamAppId) || (game.launchVia === 'epic' && game.launchUri));
+  // Check before touching the game folder or recording a run that would stay "running" for ever.
+  if (!viaStore && (!game.exe || !fs.existsSync(game.exe))) throw new Error('Game exe not found — set it in Game settings');
   const versionInfo = await games.refreshVersion(game);
-  games.save(game);
+  // Save only the version fields on top of a fresh read (game settings may have been saved meanwhile).
+  const cur = games.get(key) || game;
+  for (const k of ['gameVersion', 'gameVersionUpdatedAt', 'versionHistory', 'versionChangedNotice', 'updatePending', 'publicVersion', 'publicVersionDate', 'pendingVersion']) if (k in game) cur[k] = game[k];
+  game = games.save(cur);
   let profile = null;
-  let deployed = null;
   if (opts.vanilla) installer.undeploy(game);
   else {
-    profile = games.profile(key, opts.profile || game.activeProfile || 'Default');
+    const pname = opts.profile || game.activeProfile || 'Default';
+    profile = games.profile(key, pname);
+    if (!profile) throw new Error(`Profile "${pname}" not found`);
     if (opts.onlyMods) {
       // Culprit search: run a temporary subset without touching what the user turned on.
       const keep = new Set(opts.onlyMods);
       const temp = { ...profile, mods: profile.mods.map(m => ({ ...m, enabled: keep.has(m.uid) })) };
-      deployed = installer.deploy(game, temp, { save: false });
+      installer.deploy(game, temp, { save: false });
       // Keep the file lists (used to map crash DLLs back to mods) without changing on/off.
       const files = new Map(temp.mods.filter(m => m.deployedFiles).map(m => [m.uid, m.deployedFiles]));
       for (const m of profile.mods) if (files.has(m.uid)) m.deployedFiles = files.get(m.uid);
       games.saveProfile(key, profile);
-    } else deployed = installer.deploy(game, profile);
+    } else installer.deploy(game, profile);
   }
   const enabledMods = opts.vanilla ? [] : (opts.onlyMods ? profile.mods.filter(m => opts.onlyMods.includes(m.uid)) : profile.mods.filter(m => m.enabled));
   const r = {
@@ -78,58 +167,90 @@ async function launch(key, opts = {}) {
   const workDir = game.installPath || (exe ? path.dirname(exe) : undefined);
   const args = String(game.args || '').match(/(?:[^\s"]+|"[^"]*")+/g)?.map(a => a.replace(/^"|"$/g, '')) || [];
   if (game.launchVia === 'steam' && game.steamAppId) {
-    shell.openExternal(`steam://run/${game.steamAppId}//${encodeURIComponent(args.join(' '))}`);
+    shell.openExternal(`steam://run/${game.steamAppId}//${encodeURIComponent(args.join(' '))}`).catch(e => store.log('steam launch', e.message));
   } else if (game.launchVia === 'epic' && game.launchUri) {
-    shell.openExternal(game.launchUri);
-  } else {
-    if (!exe || !fs.existsSync(exe)) throw new Error('Game exe not found — set it in Game settings');
-    child = spawn(exe, args, { cwd: workDir, detached: true, stdio: 'ignore', windowsHide: !!process.env.MH_HARNESS });
-    child.unref();
+    shell.openExternal(game.launchUri).catch(e => store.log('epic launch', e.message));
   }
-  const session = { run: r, game, child, exitCode: null, autoTest: opts.autoTestSeconds || null, snap, t0, stopped: false, sawProcess: false };
+  const session = { run: r, game, child: null, exitCode: null, autoTest: opts.autoTestSeconds || null, snap, t0, stopped: false, sawProcess: false };
+  if (!viaStore) {
+    try {
+      child = spawn(exe, args, { cwd: workDir, detached: true, stdio: 'ignore', windowsHide: !!process.env.MH_HARNESS });
+      // Without this listener a refused start (e.g. an exe that needs administrator rights) is an
+      // uncaught error in the main process.
+      child.on('error', e => { session.spawnError = e; store.log('game failed to start', exe, e.message); });
+      child.on('exit', code => { session.exitCode = code; });
+      child.unref();
+    } catch (e) { session.spawnError = e; }
+    session.child = child;
+  }
   active.set(key, session);
-  if (child) child.on('exit', code => { session.exitCode = code; });
   emit('run', { key, status: status(key), run: r });
-  watch(key, session).catch(e => store.log('watch failed', e));
+  watch(key, session).catch(e => store.log('watch failed', e)).then(() => finish(key, session)).catch(e => store.log('finish failed', e));
   return r;
 }
 
+// Watches the game while it runs. Cheap on purpose: a liveness check on known pids every few seconds;
+// the process list is only read while waiting for the game to appear, a few times early on (to catch
+// a game started by a launcher that stays open), and when every known process is gone (hand-offs).
+const POLL_MS = 4000;
 async function watch(key, s) {
-  const dir = s.game.installPath || path.dirname(s.game.exe || '');
-  const exeName = s.game.exe ? path.basename(s.game.exe) : null;
+  s.dir = s.game.installPath || (s.game.exe ? path.dirname(s.game.exe) : '');
+  s.exeName = s.game.exe ? path.basename(s.game.exe) : null;
+  s.exeNames = gameExeNames(s.dir, s.exeName);
+  s.known = new Map(); // pid -> is it the game
+  const pids = new Set();
+  if (s.child && s.child.pid) { pids.add(s.child.pid); s.known.set(s.child.pid, true); }
   const deadline = Date.now() + 3 * 60e3; // game must appear within 3 min (Steam can be slow)
-  let goneSince = null;
+  const extraScans = [6e3, 20e3, 60e3];
+  let missed = 0;
   while (true) {
-    await new Promise(r => setTimeout(r, 2000));
-    const procs = dir ? await procsIn(dir, exeName) : [];
-    if (procs.length) {
-      s.sawProcess = true; goneSince = null; s.pids = procs.map(p => p.pid);
-      if (s.autoTest && (Date.now() - s.t0) / 1000 >= s.autoTest + 15) {
+    await new Promise(r => setTimeout(r, missed ? 2000 : POLL_MS));
+    for (const pid of [...pids]) if (!alive(pid)) pids.delete(pid);
+    const since = Date.now() - s.t0;
+    let scan = !pids.size;
+    while (extraScans.length && since >= extraScans[0]) { extraScans.shift(); scan = true; }
+    if (scan && s.exeNames.length) for (const pid of await scanGame(s)) if (alive(pid)) pids.add(pid);
+    if (pids.size) {
+      s.sawProcess = true; missed = 0; s.pids = [...pids];
+      if (s.autoTest && since / 1000 >= s.autoTest + 15) {
         // Survived long enough: count as a pass and close it.
         s.autoPassed = true;
-        if (store.settings().closeGameAfterAutoTest) for (const p of procs) try { process.kill(p.pid); } catch { }
+        if (store.settings().closeGameAfterAutoTest) for (const pid of pids) try { process.kill(pid); } catch { }
       }
     } else if (!s.sawProcess) {
-      if (s.child && s.exitCode != null && Date.now() - s.t0 > 8000) break; // exe started and quit without a lingering process
+      if (s.spawnError) break;
+      if (s.child && s.exitCode != null && since > 8000) break; // exe started and quit without a lingering process
       if (Date.now() > deadline) break;
-    } else {
-      goneSince = goneSince || Date.now();
-      if (Date.now() - goneSince > 4000) break; // allow launcher->game hand-offs
-    }
+    } else if (++missed >= 2) break; // gone on two checks in a row (allows launcher -> game hand-offs)
   }
-  await finish(key, s);
 }
 
 const CRASH_CODES = new Set([0xC0000005, 0xC0000409, 0xC00000FD, 0xC0000374, 0xE0434352, 0x80000003, 0xC000001D, 0xC0000096, 0xC0000094, 0x40000015]);
 
+// The session stays in `active` until the verdict is saved, so waitFor() and a second launch
+// never see a half-finished run.
 async function finish(key, s) {
-  active.delete(key);
+  const r = s.run;
+  try {
+    await finishNow(key, s);
+  } catch (e) {
+    store.log('collecting crash info failed', key, e);
+    if (r.outcome === 'running') r.outcome = s.autoPassed ? 'passed' : (s.sawProcess ? 'ok' : 'failed-to-start');
+    try { saveRun(key, r); } catch { }
+  } finally {
+    active.delete(key);
+    emit('run', { key, status: status(key), run: r });
+    if (s.resolve) s.resolve(r);
+  }
+}
+async function finishNow(key, s) {
   const r = s.run;
   r.endedAt = new Date().toISOString();
   r.durationSec = Math.round((Date.now() - s.t0) / 1000);
   r.exitCode = s.exitCode;
-  const game = games.get(key);
+  const game = games.get(key) || s.game;
   const ev = await collectEvidence(game, s);
+  if (s.spawnError) ev.evidence.unshift({ kind: 'windows', text: `Windows refused to start ${path.basename(game.exe || 'the game')}: ${s.spawnError.message}${/EACCES|740|elevation/i.test(`${s.spawnError.message} ${s.spawnError.code}`) ? ' (it may need to run as administrator)' : ''}` });
   r.evidence = ev.evidence;
   r.logs = ev.logs;
   const code = s.exitCode == null ? null : (s.exitCode >>> 0);
@@ -139,10 +260,8 @@ async function finish(key, s) {
   else if (!s.sawProcess && !(s.child && s.exitCode === 0)) r.outcome = 'failed-to-start';
   else if (ev.softErrors) r.outcome = 'closed-with-errors';
   else r.outcome = 'ok';
-  if (r.outcome === 'crashed' || r.outcome === 'failed-to-start') r.culprits = blame(game, r, ev);
+  if ((r.outcome === 'crashed' || r.outcome === 'failed-to-start') && !s.spawnError) r.culprits = blame(game, r, ev);
   saveRun(key, r);
-  emit('run', { key, status: status(key), run: r });
-  if (s.resolve) s.resolve(r);
 }
 
 // Lets the user override the verdict ("it crashed" / "it worked fine").
@@ -160,7 +279,10 @@ function setOutcome(key, runId, outcome) {
 function stop(key) {
   const s = active.get(key);
   if (!s) return false;
-  for (const pid of s.pids || []) try { process.kill(pid); } catch { }
+  s.stopped = true;
+  const pids = new Set(s.pids || []);
+  if (s.child && s.child.pid && s.exitCode == null) pids.add(s.child.pid);
+  for (const pid of pids) try { process.kill(pid); } catch { }
   return true;
 }
 
@@ -339,4 +461,4 @@ function blame(game, r, ev) {
   return [...scores.values()].sort((a, b) => b.score - a.score).slice(0, 8);
 }
 
-module.exports = { setEmitter, launch, stop, status, runs, setOutcome, waitFor, scanLog, blame, saveRun };
+module.exports = { setEmitter, launch, stop, status, anyRunning, runs, setOutcome, waitFor, scanLog, blame, saveRun };

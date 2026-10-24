@@ -13,6 +13,7 @@ const GOOD = new Set(['ok', 'passed', 'closed-with-errors']);
 function analyse(key, profileName) {
   const game = games.get(key);
   const profile = games.profile(key, profileName);
+  if (!game || !profile) throw new Error('Unknown game or profile');
   const all = launcher.runs(key).filter(r => !r.vanilla && r.outcome !== 'running');
   const ver = game.gameVersion;
   const sameVer = all.filter(r => !ver || !r.gameVersion || r.gameVersion === ver);
@@ -140,6 +141,7 @@ async function startSearch(key, profileName, { mode = 'auto', seconds } = {}) {
   if (searches.has(key)) throw new Error('A culprit search is already running');
   const profile = games.profile(key, profileName);
   const game = games.get(key);
+  if (!game || !profile) throw new Error('Unknown game or profile');
   const enabled = profile.mods.filter(m => m.enabled);
   if (enabled.length < 1) throw new Error('Turn on the mods you want to test first');
   const secs = seconds || store.settings().autoTestSeconds;
@@ -253,4 +255,6 @@ function cancelSearch(key) {
 
 function clearVerdicts(key) { store.writeJson(games.gdir(key, 'verdicts.json'), []); }
 
-module.exports = { analyse, matrix, startSearch, cancelSearch, searchState, setEmitter, clearVerdicts };
+const anyRunning = () => searches.size > 0;
+
+module.exports = { analyse, matrix, startSearch, cancelSearch, searchState, setEmitter, clearVerdicts, anyRunning };

@@ -4,7 +4,7 @@
 //  Fallback (key required): REST v1 (https://api.nexusmods.com/v1, header apikey).
 //  Downloads always need the key: premium -> direct link; free -> needs key/expires from an nxm:// link,
 //  otherwise {manual:true}.
-const { cleanName, gameSlug, iso, num, noKey, qs, mapLimit, bbcodeToHtml } = require('./_util');
+const { cleanName, gameSlug, iso, num, noKey, qs, mapLimit, bbcodeToHtml, extractImages, uniqueUrls } = require('./_util');
 
 const V1 = 'https://api.nexusmods.com/v1';
 const GQL = 'https://api.nexusmods.com/v2/graphql';
@@ -15,7 +15,7 @@ const V1_LIST = { popular: 'trending', downloads: 'trending', updated: 'latest_u
 const CAT_ORDER = { MAIN: 0, UPDATE: 1, OPTIONAL: 2, MISCELLANEOUS: 3, OLD_VERSION: 4, ARCHIVED: 5, DELETED: 6 };
 const CAT_BY_ID = { 1: 'MAIN', 2: 'UPDATE', 3: 'OPTIONAL', 4: 'OLD_VERSION', 5: 'MISCELLANEOUS', 6: 'DELETED', 7: 'ARCHIVED' };
 
-const MOD_FIELDS = 'modId uid name summary version author updatedAt createdAt downloads endorsements thumbnailUrl pictureUrl adultContent status modCategory { name } game { id domainName name } uploader { name }';
+const MOD_FIELDS = 'modId uid name summary version author updatedAt createdAt downloads endorsements thumbnailUrl thumbnailLargeUrl pictureUrl adultContent status modCategory { name } game { id domainName name } uploader { name memberId avatar }';
 
 function apiKey(ctx) { return (ctx.keys && ctx.keys.nexus) || null; }
 function needKey(ctx) { const k = apiKey(ctx); if (!k) throw noKey('Nexus Mods', KEY_HELP); return k; }
@@ -34,6 +34,7 @@ async function gql(ctx, query, variables, ttl = 2 * 60 * 1000) {
 }
 
 function modPage(domain, id) { return `${WEB}/${domain}/mods/${id}`; }
+function userPage(memberId) { return memberId ? `${WEB}/users/${memberId}` : null; }
 
 function fromGql(m, domain) {
   const d = (m.game && m.game.domainName) || domain;
@@ -43,6 +44,10 @@ function fromGql(m, domain) {
     gameId: d,
     name: m.name,
     author: m.author || (m.uploader && m.uploader.name) || null,
+    // Nexus "author" is free text (often a team); the profile link is the uploader's account.
+    authorUrl: userPage(m.uploader && m.uploader.memberId),
+    uploader: (m.uploader && m.uploader.name) || null,
+    uploaderUrl: userPage(m.uploader && m.uploader.memberId),
     summary: m.summary || '',
     version: m.version || null,
     updatedAt: iso(m.updatedAt),
@@ -50,6 +55,7 @@ function fromGql(m, domain) {
     downloads: num(m.downloads),
     likes: num(m.endorsements),
     icon: m.thumbnailUrl || m.pictureUrl || null,
+    image: m.thumbnailLargeUrl || m.pictureUrl || m.thumbnailUrl || null,
     url: modPage(d, m.modId),
     categories: m.modCategory && m.modCategory.name ? [m.modCategory.name] : [],
     nsfw: !!m.adultContent,
@@ -66,6 +72,9 @@ function fromV1(m, domain, cats) {
     gameId: d,
     name: m.name || `Mod ${m.mod_id}`,
     author: m.author || m.uploaded_by || null,
+    authorUrl: m.uploaded_users_profile_url || userPage(m.user && m.user.member_id),
+    uploader: m.uploaded_by || (m.user && m.user.name) || null,
+    uploaderUrl: m.uploaded_users_profile_url || userPage(m.user && m.user.member_id),
     summary: m.summary || '',
     version: m.version || null,
     updatedAt: iso(m.updated_timestamp || m.updated_time),
@@ -73,6 +82,7 @@ function fromV1(m, domain, cats) {
     downloads: num(m.mod_downloads),
     likes: num(m.endorsement_count),
     icon: m.picture_url ? m.picture_url.replace('/images/', '/images/thumbnails/') : null,
+    image: m.picture_url || null,
     url: modPage(d, m.mod_id),
     categories: cats && cats[m.category_id] ? [cats[m.category_id]] : [],
     nsfw: !!m.contains_adult_content,
@@ -213,26 +223,43 @@ module.exports = {
   },
 
   async getMod(ctx, domain, modId) {
+    let mod, raw, picture;
     try {
       const gid = await gameNumId(ctx, domain);
       const d = await gql(ctx, `query($m:ID!,$g:ID!){ mod(modId:$m, gameId:$g){ ${MOD_FIELDS} description } }`, { m: String(modId), g: String(gid) }, 10 * 60 * 1000);
       const m = d.mod;
-      return {
-        ...fromGql(m, domain),
-        description: bbcodeToHtml(m.description || m.summary || ''),
-        descriptionFormat: 'html',
-        screenshots: m.pictureUrl ? [m.pictureUrl] : [],
-      };
+      if (!m) throw new Error(`Nexus: mod ${modId} not found`);
+      mod = fromGql(m, domain); raw = m.description || m.summary || ''; picture = m.pictureUrl;
     } catch (e) {
       if (!apiKey(ctx)) throw e;
       const m = await v1(ctx, `/games/${encodeURIComponent(domain)}/mods/${encodeURIComponent(modId)}.json`, { ttl: 10 * 60 * 1000 });
-      return {
-        ...fromV1(m, domain),
-        description: bbcodeToHtml(m.description || m.summary || ''),
-        descriptionFormat: 'html',
-        screenshots: m.picture_url ? [m.picture_url] : [],
-      };
+      mod = fromV1(m, domain); raw = m.description || m.summary || ''; picture = m.picture_url;
     }
+    // Credited author is free text; link it to that member's profile when it is a Nexus user name.
+    if (mod.author && mod.uploader && mod.author !== mod.uploader && /^[\w.\-]{2,40}$/.test(mod.author)) {
+      try {
+        const u = await gql(ctx, 'query($n:String!){ userByName(name:$n){ memberId } }', { n: mod.author }, 24 * 3600 * 1000);
+        if (u && u.userByName && u.userByName.memberId) mod.authorUrl = userPage(u.userByName.memberId);
+      } catch (e) { /* keep the uploader's profile */ }
+    }
+    const credits = [];
+    if (mod.author) credits.push({ name: mod.author, role: mod.author === mod.uploader ? 'Author & uploader' : 'Author', url: mod.authorUrl || null });
+    if (mod.uploader && mod.uploader !== mod.author) credits.push({ name: mod.uploader, role: 'Uploader', url: mod.uploaderUrl || null });
+    const description = bbcodeToHtml(raw);
+    const screenshots = uniqueUrls([picture, ...extractImages(description)]);
+    return {
+      ...mod,
+      image: picture || mod.image || null,
+      description,
+      descriptionFormat: 'html',
+      // The image gallery is not in any Nexus API (GraphQL Mod has no media; v1 has no images endpoint),
+      // so this is the main picture plus every image embedded in the description.
+      screenshots,
+      gallery: screenshots.map((url, i) => ({ url, title: i === 0 && url === picture ? 'Main image' : null, description: null })),
+      screenshotsComplete: false,
+      galleryUrl: `${mod.url}?tab=images`,
+      credits,
+    };
   },
 
   async getVersions(ctx, domain, modId) {

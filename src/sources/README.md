@@ -71,6 +71,43 @@ Mod:
 - `version` / `updatedAt` / `author` may be null when unknown.
 - optional: `slug` (Modrinth, CurseForge), `loaders` [string] (Modrinth), `views` (GameBanana),
   `websiteUrl`, `allowModDistribution` (CurseForge), `requirements` [{name,url}] (GameBanana getMod).
+
+Author and images (every Mod, from listMods and getMod):
+- `author` display name, `authorUrl` link to the author's profile on that site (null only if the site gives none).
+- `icon` small image for list rows; `image` larger version of the same main image for cards/headers
+  (getMod returns the full-size one where the list API only has a medium one).
+
+  | site | author / authorUrl | icon | image (list → getMod) |
+  |---|---|---|---|
+  | Nexus | `author` (free text credit, often a team) / uploader's `/users/{memberId}`; getMod links the credited author's own profile when `author` is a Nexus user name | `thumbnailUrl` (385px) | `thumbnailLargeUrl` (622px) → `pictureUrl` (original) |
+  | Thunderstore | namespace (team) / `/c/{community}/p/{team}/` | package icon (256px) | same icon (no larger image exists) |
+  | Modrinth | organization name if org-owned, else owner username / `/organization/{slug}` or `/user/{name}` | `icon_url` (96px) | `icon_url` → `raw_icon_url` (original) |
+  | GameBanana | submitter / `_aSubmitter._sProfileUrl` | first preview image, 220px | 800px (or next size that exists) → original `_sFile` |
+  | CurseForge | `authors[0].name` / `authors[0].url` | `logo.thumbnailUrl` | `logo.url` |
+- Nexus also sets `uploader` / `uploaderUrl` (the account that published it).
+- Modrinth also sets `featuredImage` (featured gallery picture, may be null).
+
+getMod extras:
+- `description`: Nexus = full BBCode description converted to HTML (`_util.bbcodeToHtml`); Thunderstore =
+  README markdown of the latest version (falls back to the site's rendered html README, format 'html');
+  Modrinth = body markdown; GameBanana = `_sText` html; CurseForge = `/description` html.
+  bbcodeToHtml output uses classes AND inline styles: `bb-size-1..7`, `bb-size-px`, `bb-color`,
+  `bb-align-center|left|right|justify`, `bb-indent`, `bb-youtube` (link wrapping a video thumbnail),
+  `<details class="bb-spoiler">`. A sanitizer that drops `style` keeps the classes for CSS.
+  GameBanana `_sText` uses its own classes (`GreenColor`, `RedColor`, ...).
+- `screenshots` [url]: every gallery image at full size, deduplicated, in the author's order
+  (Modrinth: featured first, `raw_url`; GameBanana: all `_aPreviewMedia._aImages` originals, first = main
+  image; CurseForge: `screenshots[].url`; Thunderstore: images embedded in the README, badges/donate
+  buttons/avatars/video thumbnails skipped; Nexus: `pictureUrl` first, then every image embedded in the
+  description).
+- `gallery` [{url, title, description}]: same list as `screenshots` with captions where the site has them.
+- `screenshotsComplete: false` + `galleryUrl` (Nexus only): no Nexus API exposes the image gallery
+  (GraphQL `Mod` has no media field, v1 has no images endpoint), so `screenshots` may be missing
+  gallery pictures; `galleryUrl` is the site's Images tab.
+- `credits` [{name, role, url, avatar?}]: Modrinth = organization + project members + org members
+  (role = team role); GameBanana = `_aCredits` (role = "Group: role"), contributing studios, submitter;
+  Nexus = author and uploader; CurseForge = `authors[]` (first = Owner); Thunderstore = team as Owner
+  (team members need a login).
 - categories(): ids are what listMods' `category` option expects. For Nexus the id IS the category
   name; for Modrinth it is the tag name; elsewhere a numeric id as string.
 - sort 'name': Thunderstore and Modrinth have no name ordering server-side; the page is sorted locally.

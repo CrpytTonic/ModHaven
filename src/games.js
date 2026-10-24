@@ -126,29 +126,38 @@ function renameProfile(key, from, to) {
   if (!to) throw new Error('Profile needs a name');
   if (from === to) return profile(key, from);
   if (profile(key, to)) throw new Error(`A profile called "${to}" already exists`);
+  if (!profile(key, from)) throw new Error(`Profile "${from}" not found`);
   fs.renameSync(pdir(key, from), pdir(key, to));
   const p = profile(key, to); p.name = to; saveProfile(key, p);
   const g = get(key);
-  if (g.activeProfile === from) { g.activeProfile = to; save(g); }
+  if (g && g.activeProfile === from) { g.activeProfile = to; save(g); }
+  // The game folder record names the deployed profile: keep it pointing at the renamed one, or later
+  // changes aren't applied to the game folder and its configs are saved into the old name.
+  const dep = store.readJson(gdir(key, 'deploy.json'), null);
+  if (dep && dep.profile === from) store.writeJson(gdir(key, 'deploy.json'), { ...dep, profile: to });
   return p;
 }
 function deleteProfile(key, name) {
   if (name === 'Default') throw new Error('The Default profile can\'t be deleted (you can clear it instead)');
   fs.rmSync(pdir(key, name), { recursive: true, force: true });
   const g = get(key);
-  if (g.activeProfile === name) { g.activeProfile = 'Default'; save(g); }
+  if (g && g.activeProfile === name) { g.activeProfile = 'Default'; save(g); }
 }
 
 // Share code = base64 JSON of the mod list (like Thunderstore profile codes, but offline).
 function exportProfile(key, name) {
   const p = profile(key, name);
+  if (!p) throw new Error(`Profile "${name}" not found`);
   const data = { v: 1, game: key, name: p.name, mods: p.mods.map(m => ({ s: m.source, i: m.id, g: m.gameId, n: m.name, v: m.versionId, ver: m.version, e: m.enabled ? 1 : 0 })) };
   return 'MODHAVEN1:' + Buffer.from(JSON.stringify(data)).toString('base64');
 }
 function parseShareCode(code) {
   const m = String(code || '').trim().match(/^MODHAVEN1:([A-Za-z0-9+/=]+)$/);
   if (!m) throw new Error('That is not a ModHaven profile code');
-  return JSON.parse(Buffer.from(m[1], 'base64').toString('utf8'));
+  let data;
+  try { data = JSON.parse(Buffer.from(m[1], 'base64').toString('utf8')); } catch { throw new Error('That profile code is damaged (copy the whole code)'); }
+  if (!data || !Array.isArray(data.mods)) throw new Error('That profile code has no mod list');
+  return data;
 }
 
 function copyDir(from, to) {

@@ -1,9 +1,12 @@
 // ModHaven — Copyright (c) 2026 CrpytTonic. All rights reserved.
 // Modrinth (api.modrinth.com/v2) — keyless. Minecraft only (project_type:mod).
-const { iso, num, qs } = require('./_util');
+const { iso, num, qs, uniqueGallery } = require('./_util');
 
 const API = 'https://api.modrinth.com/v2';
 const WEB = 'https://modrinth.com';
+const API3 = 'https://api.modrinth.com/v3'; // organizations + members with is_owner
+const userUrl = u => (u ? `${WEB}/user/${encodeURIComponent(u)}` : null);
+const orgUrl = o => (o ? `${WEB}/organization/${encodeURIComponent(o)}` : null);
 const INDEX = { popular: 'relevance', downloads: 'downloads', updated: 'updated', newest: 'newest', name: 'relevance' };
 const LOADERS = new Set(['fabric', 'forge', 'neoforge', 'quilt', 'liteloader', 'rift', 'modloader', 'risugami', 'babric', 'bta-babric', 'java-agent', 'legacy-fabric', 'nilloader', 'ornithe', 'bukkit', 'paper', 'spigot', 'purpur', 'folia', 'sponge', 'velocity', 'waterfall', 'bungeecord', 'datapack', 'iris', 'optifine', 'canvas', 'vanilla', 'minecraft']);
 
@@ -14,7 +17,9 @@ function fromHit(h, versionNumbers) {
     slug: h.slug,
     gameId: 'minecraft',
     name: h.title,
-    author: h.author || null,
+    // Organization-owned projects are credited to the organization on modrinth.com.
+    author: h.organization || h.author || null,
+    authorUrl: h.organization ? orgUrl(h.organization_id || h.organization) : userUrl(h.author),
     summary: h.description || '',
     version: (versionNumbers && versionNumbers[h.latest_version]) || null,
     updatedAt: iso(h.date_modified),
@@ -22,6 +27,9 @@ function fromHit(h, versionNumbers) {
     downloads: num(h.downloads),
     likes: num(h.follows),
     icon: h.icon_url || null,
+    // search only has the 96px icon; getMod has the full-size one (raw_icon_url)
+    image: h.icon_url || null,
+    featuredImage: h.featured_gallery || null,
     url: `${WEB}/${h.project_type || 'mod'}/${h.slug || h.project_id}`,
     categories: (h.display_categories || h.categories || []).filter(c => !LOADERS.has(c)),
     loaders: (h.categories || []).filter(c => LOADERS.has(c)),
@@ -121,15 +129,33 @@ module.exports = {
 
   async getMod(ctx, gameId, modId) {
     const p = await ctx.fetchJson(`${API}/project/${encodeURIComponent(modId)}`, { ttl: 10 * 60 * 1000 });
-    let author = null, version = null;
-    const [members, versions] = await Promise.all([
-      ctx.fetchJson(`${API}/project/${encodeURIComponent(modId)}/members`, { ttl: 60 * 60 * 1000 }).catch(() => []),
-      ctx.fetchJson(`${API}/project/${encodeURIComponent(modId)}/version`, { ttl: 10 * 60 * 1000 }).catch(() => []),
+    const [members, versions, org] = await Promise.all([
+      ctx.fetchJson(`${API3}/project/${encodeURIComponent(p.id)}/members`, { ttl: 60 * 60 * 1000 })
+        .catch(() => ctx.fetchJson(`${API}/project/${encodeURIComponent(p.id)}/members`, { ttl: 60 * 60 * 1000 }))
+        .catch(() => []),
+      ctx.fetchJson(`${API}/project/${encodeURIComponent(p.id)}/version`, { ttl: 10 * 60 * 1000 }).catch(() => []),
+      p.organization ? ctx.fetchJson(`${API3}/organization/${encodeURIComponent(p.organization)}`, { ttl: 60 * 60 * 1000 }).catch(() => null) : null,
     ]);
-    const owner = members.find(m => m.role === 'Owner' || m.is_owner) || members[0];
-    if (owner && owner.user) author = owner.user.username;
-    if (versions[0]) version = versions[0].version_number;
-    const gallery = (p.gallery || []).slice().sort((a, b) => (b.featured - a.featured) || (a.ordering - b.ordering));
+    const team = (Array.isArray(members) ? members : []).filter(m => m && m.user && m.accepted !== false)
+      .sort((x, y) => num(x.ordering) - num(y.ordering));
+    const owner = team.find(m => m.is_owner) || team.find(m => /^owner$/i.test(m.role)) || team[0];
+    let author = owner ? owner.user.username : null;
+    let authorUrl = owner ? userUrl(owner.user.username) : null;
+    if (org && org.name) { author = org.name; authorUrl = orgUrl(org.slug || org.id); }
+    else if (p.organization) authorUrl = orgUrl(p.organization);
+    const credits = team.map(m => ({ name: m.user.username, role: m.role || 'Member', url: userUrl(m.user.username), avatar: m.user.avatar_url || null }));
+    if (org && Array.isArray(org.members)) {
+      for (const m of org.members) {
+        if (!m || !m.user || m.accepted === false || credits.some(c => c.name === m.user.username)) continue;
+        credits.push({ name: m.user.username, role: `${m.role || 'Member'} (${org.name})`, url: userUrl(m.user.username), avatar: m.user.avatar_url || null });
+      }
+    }
+    if (org && org.name) credits.unshift({ name: org.name, role: 'Organization', url: authorUrl, avatar: org.icon_url || null });
+    // raw_url = the full-size upload (url is the 350px preview)
+    const shots = uniqueGallery((p.gallery || []).slice()
+      .sort((x, y) => (Number(!!y.featured) - Number(!!x.featured)) || (num(x.ordering) - num(y.ordering)))
+      .map(g => ({ url: g.raw_url || g.url, title: g.title, description: g.description })));
+    const version = versions[0] ? versions[0].version_number : null;
     return {
       source: 'modrinth',
       id: p.id,
@@ -137,6 +163,7 @@ module.exports = {
       gameId: 'minecraft',
       name: p.title,
       author,
+      authorUrl,
       summary: p.description || '',
       version,
       updatedAt: iso(p.updated),
@@ -144,6 +171,8 @@ module.exports = {
       downloads: num(p.downloads),
       likes: num(p.followers),
       icon: p.icon_url || null,
+      image: p.raw_icon_url || p.icon_url || null,
+      featuredImage: ((p.gallery || []).find(g => g.featured) || {}).raw_url || null,
       url: `${WEB}/${p.project_type || 'mod'}/${p.slug || p.id}`,
       categories: [...(p.categories || []), ...(p.additional_categories || [])].filter(c => !LOADERS.has(c)),
       loaders: p.loaders || [],
@@ -152,7 +181,9 @@ module.exports = {
       gameVersions: p.game_versions || [],
       description: p.body || p.description || '',
       descriptionFormat: p.body ? 'markdown' : 'text',
-      screenshots: gallery.map(g => g.raw_url || g.url).filter(Boolean),
+      screenshots: shots.map(g => g.url),
+      gallery: shots,
+      credits,
       websiteUrl: p.source_url || p.wiki_url || null,
     };
   },

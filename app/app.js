@@ -196,32 +196,35 @@ function toast(text, kind = 'info', ms = 5000) {
 }
 const fail = e => toast(esc(e.message || e), 'error', 8000);
 
-function modal(html, { wide } = {}) {
+function modal(html, { wide, onClose } = {}) {
   const root = $('#modalRoot');
   const scrim = document.createElement('div');
   scrim.className = 'scrim';
   scrim.innerHTML = `<div class="modal${wide ? ' wide' : ''}" role="dialog">${html}</div>`;
   root.appendChild(scrim);
-  const close = () => scrim.remove();
+  // One listener per modal, removed however the modal closes; Esc only closes the top one.
+  let closed = false;
+  const onKey = e => { if (e.key === 'Escape' && root.lastElementChild === scrim && !$('.lightbox')) { e.preventDefault(); close(); } };
+  const close = () => { if (closed) return; closed = true; scrim.remove(); document.removeEventListener('keydown', onKey); if (onClose) onClose(); };
   scrim.addEventListener('mousedown', e => { if (e.target === scrim) close(); });
-  const onKey = e => { if (e.key === 'Escape') { close(); document.removeEventListener('keydown', onKey); } };
   document.addEventListener('keydown', onKey);
   return { el: scrim.firstChild, close };
 }
 function confirmBox(title, text, okLabel = 'OK', danger = false) {
   return new Promise(res => {
+    // Esc / clicking outside counts as Cancel, so callers never wait forever.
     const m = modal(`<header><div><h2>${esc(title)}</h2></div></header><div class="mbody"><div>${text}</div></div>
-      <footer><button class="btn" data-a="no">Cancel</button><button class="btn ${danger ? 'danger' : 'primary'}" data-a="yes">${esc(okLabel)}</button></footer>`);
-    m.el.addEventListener('click', e => { const a = e.target.closest('[data-a]'); if (!a) return; m.close(); res(a.dataset.a === 'yes'); });
+      <footer><button class="btn" data-a="no">Cancel</button><button class="btn ${danger ? 'danger' : 'primary'}" data-a="yes">${esc(okLabel)}</button></footer>`, { onClose: () => res(false) });
+    m.el.addEventListener('click', e => { const a = e.target.closest('[data-a]'); if (!a) return; res(a.dataset.a === 'yes'); m.close(); });
   });
 }
 function prompt2(title, label, value = '', okLabel = 'Save', hint = '') {
   return new Promise(res => {
     const m = modal(`<header><div><h2>${esc(title)}</h2></div></header><div class="mbody"><div class="field"><label>${esc(label)}</label>
       <input class="input" id="pv" value="${attr(value)}" spellcheck="false">${hint ? `<span class="hint">${hint}</span>` : ''}</div></div>
-      <footer><button class="btn" data-a="no">Cancel</button><button class="btn primary" data-a="yes">${esc(okLabel)}</button></footer>`);
+      <footer><button class="btn" data-a="no">Cancel</button><button class="btn primary" data-a="yes">${esc(okLabel)}</button></footer>`, { onClose: () => res(null) });
     const inp = $('#pv', m.el); inp.focus(); inp.select();
-    const done = ok => { m.close(); res(ok ? inp.value : null); };
+    const done = ok => { res(ok ? inp.value : null); m.close(); };
     inp.addEventListener('keydown', e => { if (e.key === 'Enter') done(true); });
     m.el.addEventListener('click', e => { const a = e.target.closest('[data-a]'); if (a) done(a.dataset.a === 'yes'); });
   });
@@ -293,16 +296,33 @@ document.addEventListener('click', e => {
   const mg = e.target.closest('.mygame');
   if (mg) openManaged(mg.dataset.key);
   if (e.target.id === 'openData') { e.preventDefault(); call('shell:dataFolder'); }
-  const a = e.target.closest('a[href^="http"]');
-  if (a) { e.preventDefault(); call('shell:url', a.href); }
+  const a = e.target.closest('a[href]');
+  if (a) {
+    if (/^https?:\/\//i.test(a.getAttribute('href'))) { e.preventDefault(); call('shell:url', a.href); }
+    // Links inside a mod description that aren't web links (#anchors, leftovers) must never navigate the app window.
+    else if (a.closest('.desc')) e.preventDefault();
+  }
 });
 
 // Inline handlers are blocked by the page's security policy, so these are delegated.
-document.addEventListener('load', e => { if (e.target.classList && e.target.classList.contains('gart-img')) artLoaded(e.target); }, true);
+document.addEventListener('load', e => {
+  const t = e.target;
+  if (!t.classList) return;
+  if (t.classList.contains('gart-img')) artLoaded(t);
+  // A mod "image" that is really its icon (Modrinth sends icon.png; small or square) makes a poor banner: keep just the icon.
+  else if (t.parentElement && t.parentElement.classList.contains('dhero')) {
+    const w = t.naturalWidth, h = t.naturalHeight;
+    if (!w || !h || (w < 400 && h < 300) || Math.abs(Math.log(w / h)) < 0.2) t.parentElement.hidden = true;
+  }
+}, true);
 document.addEventListener('error', e => {
   const t = e.target;
   if (t.tagName !== 'IMG') return;
   if (t.classList.contains('gart-img')) return artFailed(t);
+  if (t.hasAttribute('data-ownerr')) return; // handles its own errors (lightbox)
+  if (t.classList.contains('shot-img')) return shotFailed(t);
+  const hide = t.dataset.errhide && t.closest(t.dataset.errhide);
+  if (hide) { hide.hidden = true; return; }
   if (t.hasAttribute('data-removeonerr')) t.remove(); else t.style.visibility = 'hidden';
 }, true);
 document.addEventListener('click', e => {
@@ -641,7 +661,6 @@ async function launch(vanilla) {
     await call('run:launch', { key: g.key, profile: S.profileName, vanilla });
     S.running[g.key] = { running: true };
     renderHeroActions(); renderSidebar();
-    if (S.settings.minimizeOnLaunch) { /* main process could minimise; kept simple */ }
     void t;
   } catch (e) { fail(e); }
 }
@@ -665,7 +684,7 @@ function renderBanners() {
   if (g.versionChangedNotice) out.push(`<div class="banner warn">${tri('untested', 20)}<div class="grow"><b>The game updated</b> (${esc(g.versionChangedNotice.from)} → ${esc(g.versionChangedNotice.to)}). Mods are marked “not tested yet” until they run OK on the new version. Mods that break show a red triangle.</div><button class="btn sm" id="bVer">Got it</button></div>`);
   if (!g.installPath && g.key !== 'minecraft') out.push(`<div class="banner info"><div class="grow">ModHaven didn't find ${esc(g.name)} on this PC. You can still browse and download mods — set the game folder to install them.</div><button class="btn sm" id="bSet">Set game folder</button></div>`);
   const last = S.runs.find(r => !r.vanilla && r.profile === S.profileName);
-  if (last && ['crashed', 'failed-to-start'].includes(last.outcome) && !last.dismissed) out.push(`<div class="banner bad"><div class="grow"><b>${last.outcome === 'crashed' ? 'The game crashed' : "The game didn't start"}</b> ${esc(ago(last.endedAt))}${last.culprits.length ? ` — most likely <b>${esc(nameFor(last.culprits[0].uid))}</b>` : ' — no mod named in the logs'}.</div><button class="btn sm" id="bCrash">Open crash center</button></div>`);
+  if (last && ['crashed', 'failed-to-start'].includes(last.outcome) && !last.dismissed) out.push(`<div class="banner bad"><div class="grow"><b>${last.outcome === 'crashed' ? 'The game crashed' : "The game didn't start"}</b> ${esc(ago(last.endedAt))}${(last.culprits || []).length ?` — most likely <b>${esc(nameFor(last.culprits[0].uid))}</b>` : ' — no mod named in the logs'}.</div><button class="btn sm" id="bCrash">Open crash center</button></div>`);
   const missing = Object.keys(g.sources || {}).filter(id => srcMeta(id).needsKey && !srcMeta(id).keylessBrowse && !S.settings.keys[id]);
   if (missing.length && S.tab === 'browse') out.push(`<div class="banner info"><div class="grow">This game also has mods on ${missing.map(id => esc(srcMeta(id).name)).join(' and ')}. Add an API key to include them.</div><button class="btn sm" id="bKeys">Add keys</button></div>`);
   const ext = S.external && S.external.key === g.key ? S.external : null;
@@ -828,8 +847,8 @@ function drawInstalledList() {
         <span data-tipuid="${attr(m.uid)}">${tri(st.status)}</span>
         <label class="switch" data-stop="1"><input type="checkbox" ${m.enabled ? 'checked' : ''} data-toggle="${attr(m.uid)}"><i></i></label>
         ${img(m.icon, 'mico')}
-        <div class="mmain"><div class="mtop"><span class="mname">${esc(m.name)}</span>${srcBadge(m.source)}${hasUpdate(m) ? `<span class="pill info" data-tip="New version ${attr(m.latest.version)}">${I.up.replace('<svg', '<svg width="12" height="12" style="fill:none;stroke:currentColor;stroke-width:2.4"')}${esc(m.latest.version)}</span>` : ''}${(m.dependencyOf || []).length ? '<span class="pill" data-tip="Installed because another mod needs it">library</span>' : ''}${m.versionGuess === 'mismatch' ? '<span class="pill bad" data-tip="Your files are older than every release on this page: probably linked to the wrong mod">check link</span>' : ''}</div>
-          <div class="msum">${esc(m.summary || (m.author ? 'by ' + m.author : ''))}</div></div>
+        <div class="mmain"><div class="mtop"><span class="mname">${esc(m.name)}</span>${m.author ? `<span class="mauth">by ${esc(m.author)}</span>` : ''}${srcBadge(m.source)}${hasUpdate(m) ? `<span class="pill info" data-tip="New version ${attr(m.latest.version)}">${I.up.replace('<svg', '<svg width="12" height="12" style="fill:none;stroke:currentColor;stroke-width:2.4"')}${esc(m.latest.version)}</span>` : ''}${(m.dependencyOf || []).length ? '<span class="pill" data-tip="Installed because another mod needs it">library</span>' : ''}${m.versionGuess === 'mismatch' ? '<span class="pill bad" data-tip="Your files are older than every release on this page: probably linked to the wrong mod">check link</span>' : ''}</div>
+          <div class="msum">${esc(m.summary || '')}</div></div>
         <div class="mside"><span class="v">${esc(m.version || '')}</span><span title="${attr(fullDate(m.modUpdatedAt))}">${esc(ago(m.modUpdatedAt))}</span></div></div>`;
     }).join('') : `<div class="list-end">${S.profile.mods.length ? 'No mods match this filter.' : 'Nothing installed yet.'}</div>`;
   });
@@ -904,9 +923,14 @@ function statusCard(uid) {
 async function renderInstalledDetail(uid) {
   const m = S.profile.mods.find(x => x.uid === uid);
   const d = $('#iDetail');
-  if (!m) { d.innerHTML = installedPlaceholder(); return; }
-  d.scrollTop = 0;
-  d.innerHTML = `<div class="dhead">${img(m.icon, 'dico')}<div style="min-width:0;flex:1"><h2>${esc(m.name)}</h2><div class="by">${m.author ? 'by ' + esc(m.author) : ''}</div>
+  if (!m) { d.innerHTML = installedPlaceholder(); delete d.dataset.uid; return; }
+  // Re-rendering the same mod (profile reload, update check) keeps the reader's place and any note being typed.
+  const same = d.dataset.uid === uid;
+  const keepTop = same ? d.scrollTop : 0;
+  const oldNotes = same ? $('#dNotes', d) : null;
+  const typing = oldNotes && document.activeElement === oldNotes ? { v: oldNotes.value, s: oldNotes.selectionStart, e: oldNotes.selectionEnd } : null;
+  d.dataset.uid = uid;
+  d.innerHTML = `<div class="dhead">${img(m.icon, 'dico')}<div style="min-width:0;flex:1"><h2>${esc(m.name)}</h2>${byLine(null, m)}
       <div class="tags">${srcBadge(m.source)}${(m.categories || []).slice(0, 4).map(c => `<span class="pill">${esc(c)}</span>`).join('')}</div></div>
       <label class="switch" style="margin-top:6px" data-tip="Turn on/off"><input type="checkbox" id="dTog" ${m.enabled ? 'checked' : ''}><i></i></label></div>
     <div class="dbody">
@@ -937,8 +961,11 @@ async function renderInstalledDetail(uid) {
         ${m.lastChecked ? `<div class="muted" style="font-size:12.5px;margin-top:6px">Checked ${esc(ago(m.lastChecked))}.</div>` : ''}
       </div>
       <div class="card"><h3>Your notes</h3><textarea id="dNotes" rows="3" style="width:100%" placeholder="Anything to remember about this mod…">${esc(m.notes || '')}</textarea></div>
+      <div id="dExtra"></div>
       <div class="card"><h3>About this mod</h3><div class="desc" id="dDesc">${m.source === 'local' ? '<span class="muted">Installed from a file on this PC.</span>' : '<div class="skel" style="height:80px"></div>'}</div></div>
     </div>`;
+  d.scrollTop = keepTop;
+  if (typing) { const n = $('#dNotes', d); n.value = typing.v; n.focus(); n.setSelectionRange(typing.s, typing.e); }
   $('#dAuto', d).value = m.autoUpdate === true ? 'on' : m.autoUpdate === false ? 'off' : '';
   $('#dTog', d).onchange = async e => { S.profile = await call('mods:patch', { key: S.game.key, profile: S.profileName, uid, patch: { enabled: e.target.checked } }); drawInstalledList(); renderHeroMeta(); };
   $('#dAuto', d).onchange = async e => { S.profile = await call('mods:patch', { key: S.game.key, profile: S.profileName, uid, patch: { autoUpdate: e.target.value === 'on' ? true : e.target.value === 'off' ? false : null } }); };
@@ -990,9 +1017,14 @@ async function renderInstalledDetail(uid) {
   if (m.source !== 'local') {
     try {
       const info = await getDetails(m.source, m.gameId, m.id);
-      if (S.inst.sel !== uid || !$('#dDesc')) return;
-      $('#dDesc').innerHTML = renderDesc(info);
-    } catch (e) { if ($('#dDesc')) $('#dDesc').innerHTML = `<span class="muted">Couldn't load the description (${esc(e.message)}).</span>`; }
+      if (S.inst.sel !== uid || d.dataset.uid !== uid || !$('#dDesc', d)) return;
+      const top = d.scrollTop;
+      const by = $('.dhead .by', d);
+      if (by) by.outerHTML = byLine(info, m);
+      $('#dExtra', d).innerHTML = galleryCard(info, info.name || m.name) + creditsCard(info, info.author || m.author);
+      $('#dDesc', d).innerHTML = renderDesc(info);
+      d.scrollTop = top || keepTop;
+    } catch (e) { if ($('#dDesc', d) && d.dataset.uid === uid) $('#dDesc', d).innerHTML = `<span class="muted">Couldn't load the description (${esc(e.message)}).</span>`; }
   }
 }
 
@@ -1014,7 +1046,7 @@ function versionRows(info, inst) {
   const g = S.game;
   return (info.versions || []).map((v, i) => {
     const isCur = inst && String(inst.versionId) === String(v.id);
-    const fits = g.key === 'minecraft' && g.mcVersion && v.gameVersions.length ? v.gameVersions.includes(g.mcVersion) : null;
+    const fits = g.key === 'minecraft' && g.mcVersion && (v.gameVersions || []).length ? v.gameVersions.includes(g.mcVersion) : null;
     return `<div class="vrow"><span class="vv">${esc(v.version || v.fileName)}</span>${i === 0 ? '<span class="pill info">newest</span>' : ''}${isCur ? '<span class="pill ok">installed</span>' : ''}${fits === false ? `<span class="pill bad" data-tip="Made for ${attr(v.gameVersions.slice(0, 6).join(', '))}">not for ${esc(g.mcVersion)}</span>` : ''}
       <span class="grow" title="${attr(v.fileName || '')}">${esc(v.gameVersions && v.gameVersions.length ? v.gameVersions.slice(0, 4).join(', ') : v.fileName || '')}</span>
       <span class="vd" title="${attr(fullDate(v.date))}">${esc(ago(v.date))}</span><span class="vd">${esc(fmtBytes(v.size))}</span>
@@ -1127,15 +1159,17 @@ function resetBrowse() {
 }
 async function loadBrowsePage(retry) {
   const B = S.browse;
-  if (B.loading || (!B.hasMore && !retry)) return;
+  const list = $('#bList');
+  if (!list || B.loading || (!B.hasMore && !retry)) return;
   B.loading = true;
   const token = B.token;
-  const list = $('#bList');
   $$('.list-end', list).forEach(x => x.remove());
   list.insertAdjacentHTML('beforeend', `<div class="list-end" id="bLoading">${B.page === 0 ? Array.from({ length: 8 }, () => '<div class="skel" style="height:52px;margin:6px 0"></div>').join('') : '<span class="spinner"></span>'}</div>`);
   try {
     const r = await call('mods:browse', { key: S.game.key, query: B.q, sort: B.sort, page: B.page, sources: B.sources, gameVersion: B.gameVersion });
-    if (token !== B.token) return;
+    // Switched game (new S.browse) or rebuilt the pane (new list element) meanwhile: this page belongs to neither.
+    if (token !== B.token || B !== S.browse) return;
+    if (!list.isConnected) { B.loading = false; if ($('#bList')) loadBrowsePage(); return; }
     B.perSource = r.perSource;
     B.page++;
     B.hasMore = r.hasMore;
@@ -1152,7 +1186,9 @@ async function loadBrowsePage(retry) {
     // Short page that doesn't fill the view: keep going.
     if (B.hasMore && list.scrollHeight <= list.clientHeight + 100) loadBrowsePage();
   } catch (e) {
-    if (token !== B.token) return;
+    if (token !== B.token || B !== S.browse) return;
+    B.loading = false;
+    if (!list.isConnected) return;
     $('#bLoading') && $('#bLoading').remove();
     list.insertAdjacentHTML('beforeend', `<div class="list-end">Couldn't load mods: ${esc(e.message)} <a href="#" id="bRetry">Try again</a></div>`);
     B.loading = false;
@@ -1163,7 +1199,7 @@ function browseRow(m, i, inst) {
   const im = inst.get(`${m.source}:${m.id}`);
   return `<div class="mrow ${S.browse.sel === i ? 'sel' : ''}" data-i="${i}">
     ${img(m.icon, 'mico')}
-    <div class="mmain"><div class="mtop"><span class="mname">${esc(m.name)}</span>${srcBadge(m.source)}${m.deprecated ? '<span class="pill bad">deprecated</span>' : ''}</div>
+    <div class="mmain"><div class="mtop"><span class="mname">${esc(m.name)}</span>${m.author ? `<span class="mauth">by ${esc(m.author)}</span>` : ''}${srcBadge(m.source)}${m.deprecated ? '<span class="pill bad">deprecated</span>' : ''}</div>
       <div class="msum">${esc(m.summary || '')}</div></div>
     <div class="mside">${im ? `<span class="inst-mark">${I.check.replace('<svg', '<svg width="13" height="13" style="fill:none;stroke:currentColor;stroke-width:3"')}Installed</span>` : `<span class="v">${esc(m.version || '')}</span>`}
       <span>${m.downloads != null ? fmtNum(m.downloads) + ' ↓ · ' : ''}<span title="${attr(fullDate(m.updatedAt))}">${esc(ago(m.updatedAt))}</span></span></div></div>`;
@@ -1207,12 +1243,18 @@ async function selectBrowse(i, keepDetailScroll) {
   const m = B.mods[i];
   if (!m) return;
   B.sel = i;
-  $$('#bList .mrow').forEach(r => r.classList.toggle('sel', Number(r.dataset.i) === i));
+  // Only the old and new selected rows change: no full-list restyle, and the list's scroll stays put.
+  const list = $('#bList');
+  if (list) {
+    $$('.mrow.sel', list).forEach(r => { if (Number(r.dataset.i) !== i) r.classList.remove('sel'); });
+    const row = $(`.mrow[data-i="${i}"]`, list); if (row) row.classList.add('sel');
+  }
   const d = $('#bDetail');
+  if (!d) return;
   const tok = ++selToken;
   const prevTop = d.scrollTop;
   const inst = installedMap().get(`${m.source}:${m.id}`);
-  const head = info => `<div class="dhead">${img(info.icon || m.icon, 'dico')}<div style="min-width:0;flex:1"><h2>${esc(info.name || m.name)}</h2><div class="by">${info.author || m.author ? 'by ' + esc(info.author || m.author) : ''}</div>
+  const head = info => modHero(info, m) + `<div class="dhead">${img(info.icon || m.icon || info.image || m.image, 'dico')}<div style="min-width:0;flex:1"><h2>${esc(info.name || m.name)}</h2>${byLine(info, m)}
       <div class="tags">${srcBadge(m.source)}${(info.categories || m.categories || []).slice(0, 5).map(c => `<span class="pill">${esc(c)}</span>`).join('')}${info.nsfw ? '<span class="pill bad">18+</span>' : ''}</div></div></div>`;
   const facts = (info, latest) => `<div class="facts">
       <div class="fact"><small>Version</small><b class="mono">${esc((latest && latest.version) || info.version || m.version || '—')}</b></div>
@@ -1239,7 +1281,8 @@ async function selectBrowse(i, keepDetailScroll) {
     d.innerHTML = head(info) + `<div class="dbody">${facts(info, latest)}${actions(latest)}
       ${inst ? statusCard(inst.uid) : ''}
       ${deps.length ? `<div class="card"><h3>Needs ${deps.length} other mod${deps.length === 1 ? '' : 's'} (installed automatically)</h3><div style="display:flex;flex-wrap:wrap;gap:6px">${deps.slice(0, 30).map(x => `<span class="pill">${esc(x.name || x.modId)}${x.versionRange ? ' ' + esc(x.versionRange) : ''}</span>`).join('')}</div></div>` : ''}
-      ${(info.screenshots || []).length ? `<div class="card"><h3>Screenshots</h3><div class="shots">${info.screenshots.slice(0, 12).map(u => `<img src="${attr(u)}" loading="lazy" referrerpolicy="no-referrer" alt="">`).join('')}</div></div>` : ''}
+      ${galleryCard(info, info.name || m.name)}
+      ${creditsCard(info, info.author || m.author)}
       <div class="card"><h3>About this mod</h3><div class="desc">${renderDesc(info)}</div></div>
       <div class="card"><h3>All versions</h3><div class="vlist">${versionRows(info, inst)}</div></div></div>`;
     wireBrowseDetail(d, m, latest);
@@ -1252,15 +1295,13 @@ async function selectBrowse(i, keepDetailScroll) {
 }
 function wireBrowseDetail(d, m, latest) {
   d.onclick = async e => {
-    const im = e.target.closest('.shots img');
-    if (im) { const lb = document.createElement('div'); lb.className = 'lightbox'; lb.innerHTML = `<img src="${attr(im.src)}" referrerpolicy="no-referrer">`; lb.onclick = () => lb.remove(); document.body.appendChild(lb); return; }
     const v = e.target.closest('[data-ver]');
     if (v) return doInstall({ source: m.source, gameId: m.gameId, modId: m.id, versionId: v.dataset.ver }, `${m.name} ${v.dataset.vname}`);
     const a = e.target.closest('[data-a]');
     if (!a) return;
     if (a.dataset.a === 'install') doInstall({ source: m.source, gameId: m.gameId, modId: m.id, versionId: null }, m.name, a);
     if (a.dataset.a === 'web') call('shell:url', m.url);
-    if (a.dataset.a === 'goto') { S.inst.sel = `${m.source}:${m.id}`; setTab('installed'); renderInstalled(); const r = $(`#iList .mrow[data-uid="${CSS.escape(S.inst.sel)}"]`); if (r) r.scrollIntoView({ block: 'center' }); }
+    if (a.dataset.a === 'goto') { S.inst.sel = `${m.source}:${m.id}`; setTab('installed'); const r = $(`#iList .mrow[data-uid="${CSS.escape(S.inst.sel)}"]`); if (r) r.scrollIntoView({ block: 'center' }); }
   };
 }
 
@@ -1278,19 +1319,211 @@ async function doInstall(req, label, btn) {
   } catch (e) { fail(e); if (btn) { btn.disabled = false; btn.innerHTML = `${I.dl}Install`; } }
 }
 
+// ---------- mod author, credits, hero image and screenshot gallery ----------
+// Every field here is optional: adapters may or may not send authorUrl / image / credits / screenshot objects.
+const httpUrl = u => (typeof u === 'string' && /^https?:\/\/\S+$/i.test(u.trim()) ? u.trim() : null);
+function personHtml(name, url) {
+  const u = httpUrl(url);
+  return u ? `<a class="author" href="${attr(u)}" data-tip="Open ${attr(name)}'s profile">${esc(name)}</a>` : `<b class="author">${esc(name)}</b>`;
+}
+// "by <Author>" with a link to their profile when the site gives one. Always returns the .by element so it can be updated in place.
+function byLine(info, m) {
+  const author = (info && info.author) || (m && m.author) || '';
+  const url = (info && info.authorUrl) || (m && m.authorUrl);
+  return `<div class="by">${author ? `by ${personHtml(author, url)}` : ''}</div>`;
+}
+function creditsCard(info, author) {
+  const list = Array.isArray(info && info.credits) ? info.credits : [];
+  const seen = new Set(), people = [];
+  for (const c of list) {
+    const name = String((typeof c === 'string' ? c : c && (c.name || c.username || c.user)) || '').trim();
+    if (!name || seen.has(name.toLowerCase())) continue;
+    seen.add(name.toLowerCase());
+    const o = c && typeof c === 'object' ? c : {};
+    people.push({ name, role: String(o.role || o.roles || '').trim(), url: o.url || o.profileUrl || null, avatar: httpUrl(o.avatar) });
+  }
+  // Just the author again (already credited in the header): nothing to add.
+  if (!people.length || (people.length === 1 && author && people[0].name.toLowerCase() === String(author).toLowerCase())) return '';
+  const shown = people.slice(0, 60);
+  return `<div class="card"><h3>Credits <span class="n">${people.length}</span></h3><ul class="credits">${shown.map(p => `<li>${p.avatar ? `<img class="cav" src="${attr(p.avatar)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" data-removeonerr>` : ''}${personHtml(p.name, p.url)}${p.role ? `<span title="${attr(p.role)}">${esc(p.role)}</span>` : ''}</li>`).join('')}</ul>${people.length > shown.length ? `<div class="muted" style="font-size:12.5px;margin-top:6px">and ${people.length - shown.length} more</div>` : ''}</div>`;
+}
+// The large image the author uploaded, above the header. Falls back to just the icon (no hero) when missing or broken.
+function modHero(info, m) {
+  const big = httpUrl(info && info.image) || httpUrl(info && info.featuredImage) || httpUrl(m && m.image) || httpUrl(m && m.featuredImage);
+  if (!big || big === (info && info.icon) || big === (m && m.icon)) return '';
+  return `<div class="dhero" style="--art:${attr(cssUrl(big))}"><img src="${attr(big)}" alt="" decoding="async" referrerpolicy="no-referrer" data-errhide=".dhero"></div>`;
+}
+// Small preview for well-known image hosts, so the strip doesn't pull full-size files. Falls back to the full image on error.
+function thumbFor(u) {
+  let x = u.match(/^(https?:\/\/staticdelivery\.nexusmods\.com\/mods\/\d+\/images\/)(\d+\/[^/?#]+)$/i);
+  if (x) return x[1] + 'thumbnails/' + x[2];
+  x = u.match(/^(https?:\/\/images\.gamebanana\.com\/img\/ss\/[^?#]+\/)([^/?#]+)$/i);
+  if (x && !/^\d+-\d+_/.test(x[2])) return x[1] + '220-90_' + x[2];
+  return u;
+}
+function shotList(info) {
+  const out = [], seen = new Set();
+  // `gallery` [{url,title,description}] has the captions; `screenshots` lists the same URLs (maybe more). Merge both, gallery first.
+  const gal = Array.isArray(info && info.gallery) ? info.gallery : [];
+  const plain = Array.isArray(info && info.screenshots) ? info.screenshots : [];
+  for (const s of [...gal, ...plain]) {
+    const o = s && typeof s === 'object' ? s : null;
+    const full = httpUrl(o ? o.full || o.url || o.src || o.original : s);
+    if (!full || seen.has(full)) continue;
+    seen.add(full);
+    const thumb = httpUrl(o && (o.thumb || o.thumbnail || o.small || o.preview)) || thumbFor(full);
+    out.push({ full, thumb, caption: o ? [o.title || o.caption, o.description].filter(Boolean).map(x => String(x).trim()).join(' — ') : '' });
+  }
+  return out;
+}
+function galleryCard(info, name) {
+  const shots = shotList(info);
+  // Nexus has no API for a mod's image gallery: point to the page for the rest.
+  const more = info && info.screenshotsComplete === false && httpUrl(info.galleryUrl) ? `<a class="btn sm ghost" href="${attr(httpUrl(info.galleryUrl))}">${I.ext}See all images on ${esc(srcMeta(info.source || 'nexus').name)}</a>` : '';
+  if (!shots.length) return more ? `<div class="card gallery"><h3>Screenshots<span class="grow"></span>${more}</h3></div>` : '';
+  return `<div class="card gallery" data-gallery data-name="${attr(name || '')}"><h3>Screenshots <span class="n" data-shotcount>${shots.length}</span><span class="grow"></span>${more || '<span class="hint">Click to enlarge</span>'}</h3>
+    <div class="shots">${shots.map((s, i) => `<button class="shot" data-cap="${attr(s.caption)}" aria-label="${attr(`Screenshot ${i + 1} of ${shots.length}`)}"><img class="shot-img" src="${attr(s.thumb)}" data-full="${attr(s.full)}" loading="lazy" decoding="async" referrerpolicy="no-referrer" alt=""></button>`).join('')}</div></div>`;
+}
+function shotFailed(im) {
+  // The guessed thumbnail doesn't exist: show the full image instead, once. Still broken: drop it from the gallery.
+  if (im.dataset.full && im.getAttribute('src') !== im.dataset.full) { im.src = im.dataset.full; return; }
+  const b = im.closest('.shot'), g = im.closest('[data-gallery]');
+  if (b) b.hidden = true;
+  if (!g) return;
+  const n = $$('.shot:not([hidden])', g).length;
+  if (!n) g.hidden = true; else $('[data-shotcount]', g).textContent = n;
+}
+document.addEventListener('click', e => {
+  const b = e.target.closest('.shot');
+  if (!b) return;
+  const g = b.closest('[data-gallery]');
+  const btns = $$('.shot:not([hidden])', g);
+  openLightbox(btns.map(x => { const im = $('img', x); return { full: im.dataset.full, thumb: im.getAttribute('src'), caption: x.dataset.cap || '' }; }), Math.max(0, btns.indexOf(b)), g.dataset.name, b);
+});
+function openLightbox(items, start, title, returnFocus) {
+  if (!items.length) return;
+  $$('.lightbox').forEach(x => x.remove());
+  let i = start;
+  const lb = document.createElement('div');
+  lb.className = 'lightbox';
+  lb.setAttribute('role', 'dialog'); lb.setAttribute('aria-modal', 'true');
+  const many = items.length > 1;
+  lb.innerHTML = `<div class="lb-stage"><img class="lb-img" alt="" referrerpolicy="no-referrer" decoding="async" data-ownerr><span class="spinner lb-spin"></span><div class="lb-broken">This image couldn't be loaded.</div></div>
+    ${many ? `<button class="lb-btn lb-prev" data-lb="prev" aria-label="Previous (Left arrow)">${I.down}</button><button class="lb-btn lb-next" data-lb="next" aria-label="Next (Right arrow)">${I.down}</button>` : ''}
+    <button class="lb-btn lb-close" data-lb="close" aria-label="Close (Esc)">${I.x}</button>
+    <div class="lb-cap"><b>${esc(title || '')}</b><span class="lb-sub"></span><span class="lb-count"></span></div>`;
+  const im = $('.lb-img', lb);
+  const show = () => {
+    const it = items[i];
+    lb.classList.remove('broken');
+    lb.classList.add('loading');
+    im.dataset.fell = '';
+    im.src = it.full;
+    $('.lb-sub', lb).textContent = it.caption || '';
+    $('.lb-count', lb).textContent = many ? `${i + 1} / ${items.length}` : '';
+  };
+  im.addEventListener('load', () => lb.classList.remove('loading'));
+  im.addEventListener('error', () => {
+    const it = items[i];
+    if (!im.dataset.fell && it.thumb && it.thumb !== it.full) { im.dataset.fell = '1'; im.src = it.thumb; return; }
+    lb.classList.remove('loading'); lb.classList.add('broken');
+  });
+  const go = d => { if (!many) return; i = (i + d + items.length) % items.length; show(); };
+  const close = () => { lb.remove(); document.removeEventListener('keydown', onKey, true); if (returnFocus && returnFocus.isConnected) returnFocus.focus({ preventScroll: true }); };
+  const onKey = e => {
+    const k = e.key;
+    if (k === 'Escape') close();
+    else if (k === 'ArrowLeft') go(-1);
+    else if (k === 'ArrowRight') go(1);
+    else if (k === 'Home') { i = 0; show(); } else if (k === 'End') { i = items.length - 1; show(); }
+    else if (k === 'Tab') { // keep focus inside the viewer
+      const bs = $$('.lb-btn', lb), at = bs.indexOf(document.activeElement);
+      bs[(at + (e.shiftKey ? -1 : 1) + bs.length) % bs.length].focus();
+    } else return;
+    e.preventDefault(); e.stopPropagation();
+  };
+  lb.addEventListener('click', e => {
+    const b = e.target.closest('[data-lb]');
+    if (b) return b.dataset.lb === 'close' ? close() : go(b.dataset.lb === 'next' ? 1 : -1);
+    if (e.target === lb || e.target.classList.contains('lb-stage')) close();
+  });
+  document.addEventListener('keydown', onKey, true);
+  document.body.appendChild(lb);
+  show();
+  $('.lb-close', lb).focus({ preventScroll: true });
+}
+
+// ---------- descriptions ----------
+const DESC_MAX = 250000; // characters; longer pages are cut so the panel stays responsive
+const YT_ID = /(?:youtube(?:-nocookie)?\.com\/(?:embed\/|shorts\/|v\/|watch\?(?:[^#\s"']*&)?v=)|youtu\.be\/)([\w-]{6,20})/i;
+const descCache = new WeakMap(); // details object -> rendered HTML (sanitizing is the slow part)
+const DESC_PURIFY = {
+  FORBID_TAGS: ['style', 'form', 'input', 'button', 'select', 'textarea', 'iframe', 'frame', 'object', 'embed', 'video', 'audio', 'source', 'script', 'link', 'meta', 'base', 'marquee', 'blink', 'dialog'],
+  // Site colours, fonts and sizes fight both themes; ids/classes could collide with the app's own.
+  FORBID_ATTR: ['style', 'id', 'color', 'bgcolor', 'background', 'face', 'size', 'onerror', 'onload', 'autoplay', 'srcset'],
+};
+function linkify(escaped) {
+  return escaped.replace(/\bhttps?:\/\/[^\s<>"']+[^\s<>"'.,;:!?)\]]/gi, u => `<a href="${u}">${u}</a>`);
+}
 function renderDesc(info) {
-  let html = '';
-  const raw = info.description || info.summary || '';
-  if (!raw) return '<span class="muted">The author didn\'t write a description.</span>';
-  if (info.descriptionFormat === 'markdown') html = marked.parse(raw, { gfm: true, breaks: false });
-  else if (info.descriptionFormat === 'html') html = raw;
-  else html = esc(raw).replace(/\n/g, '<br>');
-  const clean = DOMPurify.sanitize(html, { FORBID_TAGS: ['style', 'form', 'input', 'button', 'iframe', 'script'], FORBID_ATTR: ['style', 'onerror', 'onload'] });
-  const box = document.createElement('div');
-  box.innerHTML = clean;
-  box.querySelectorAll('img').forEach(i => { i.loading = 'lazy'; i.referrerPolicy = 'no-referrer'; });
-  box.querySelectorAll('a').forEach(a => { a.target = '_blank'; a.rel = 'noreferrer'; });
-  return box.innerHTML;
+  if (info && typeof info === 'object' && descCache.has(info)) return descCache.get(info);
+  let out;
+  try { out = buildDesc(info || {}); } catch (e) { out = `<span class="muted">Couldn't show the description (${esc(e.message)}).</span>`; }
+  if (info && typeof info === 'object') descCache.set(info, out);
+  return out;
+}
+function buildDesc(info) {
+  let raw = String(info.description || info.summary || '');
+  if (!raw.trim()) return '<span class="muted">The author didn\'t write a description.</span>';
+  const cut = raw.length > DESC_MAX;
+  if (cut) raw = raw.slice(0, DESC_MAX);
+  const fmt = info.description ? info.descriptionFormat : 'text';
+  let html;
+  if (fmt === 'markdown') html = marked.parse(raw, { gfm: true, breaks: false, async: false });
+  else if (fmt === 'html') html = raw;
+  else html = linkify(esc(raw)).replace(/\r?\n/g, '<br>');
+  // Embedded players are not allowed in the app: a YouTube embed becomes a plain link, anything else is dropped.
+  html = String(html).replace(/<iframe\b[^>]*?\bsrc\s*=\s*["']?([^"'\s>]+)[^>]*>(?:\s*<\/iframe\s*>)?/gi, (_, src) => {
+    const y = YT_ID.exec(src);
+    return y ? `<p><a href="https://www.youtube.com/watch?v=${y[1]}">YouTube video</a></p>` : '';
+  }).replace(/(?:<br\s*\/?>\s*){3,}/gi, '<br><br>'); // converted BBCode often has long runs of blank lines
+  const clean = DOMPurify.sanitize(html, DESC_PURIFY);
+  // Post-process in an inert template: images inside it don't start downloading before they are lazy.
+  const tpl = document.createElement('template');
+  tpl.innerHTML = clean;
+  const base = httpUrl(info.url);
+  const abs = h => { try { return new URL(h, base || undefined).href; } catch { return null; } };
+  // Only the description converter's own classes survive (bb-size-3, bb-align-center…, GameBanana colours),
+  // so a mod page can't restyle the app with its class names.
+  tpl.content.querySelectorAll('[class]').forEach(el => {
+    const keep = [...el.classList].filter(c => /^bb-[a-z0-9-]+$/.test(c)).concat([...el.classList].filter(c => /^(Green|Red|Blue|Orange|Purple|Yellow|Pink|Grey|Gray)Color$/.test(c)).map(c => 'gb-' + c.replace('Color', '').toLowerCase()));
+    if (keep.length) el.setAttribute('class', keep.join(' ')); else el.removeAttribute('class');
+  });
+  tpl.content.querySelectorAll('img').forEach(im => {
+    const src = abs(im.getAttribute('src') || '');
+    if (!src || !/^(https?:|data:image\/)/i.test(src)) { im.remove(); return; }
+    im.setAttribute('src', src);
+    im.setAttribute('loading', 'lazy');
+    im.setAttribute('decoding', 'async');
+    im.setAttribute('referrerpolicy', 'no-referrer');
+    im.setAttribute('data-removeonerr', '');
+  });
+  tpl.content.querySelectorAll('a').forEach(a => {
+    const h = a.getAttribute('href');
+    const u = h && !h.startsWith('#') ? abs(h) : null;
+    if (u && /^(https?:|mailto:)/i.test(u)) a.setAttribute('href', u); else a.removeAttribute('href');
+    a.removeAttribute('target');
+    a.setAttribute('rel', 'noreferrer');
+    if (u && YT_ID.test(u)) {
+      a.classList.add('yt');
+      if (!a.textContent.trim()) a.insertAdjacentHTML('beforeend', '<span class="yt-label">▶ YouTube video</span>');
+    }
+  });
+  // Code blocks converted from BBCode carry a <br> per line on top of the newline: keep one break per line.
+  tpl.content.querySelectorAll('pre br').forEach(br => { const n = br.nextSibling; if (n && n.nodeType === 3 && /^\r?\n/.test(n.data)) br.remove(); else br.replaceWith('\n'); });
+  // Fixed widths/heights on tables and blocks break the panel; images keep theirs (CSS scales them down).
+  tpl.content.querySelectorAll('[width], [height], [align]').forEach(el => { if (el.tagName !== 'IMG') { el.removeAttribute('width'); el.removeAttribute('height'); } if (el.tagName === 'IMG' || el.tagName === 'TABLE') el.removeAttribute('align'); });
+  return tpl.innerHTML + (cut ? `<p class="muted">The description is very long, so only the start is shown. ${httpUrl(info.url) ? `<a href="${attr(info.url)}">Read the rest on the mod page</a>.` : ''}</p>` : '');
 }
 
 // ======================================================================
@@ -1702,6 +1935,10 @@ function renderSettings() {
       ${row('Handle Nexus “Mod Manager Download” buttons', 'Lets free Nexus accounts install with one click from the website.', sw('nxmHandler', st.nxmHandler))}
       ${row('7-Zip', S.info.sevenZip ? 'Found — .7z archives are supported' + '' : 'Not found. Install 7-Zip to unpack .7z and .rar mods.', S.info.sevenZip ? '<span class="pill ok">Ready</span>' : '<a class="btn sm" href="https://www.7-zip.org/">Get 7-Zip</a>')}
     </div>
+    <div class="sgroup"><h2>Performance while gaming</h2><div class="shelp">ModHaven stays out of the way while you play: no update checks or downloads in the background, and it goes back to sleep once it's out of sight.</div>
+      ${row('Minimise ModHaven while a game runs', 'Hides the window when you start a game and brings it back (without stealing focus) when the game closes.', sw('minimizeOnLaunch', st.minimizeOnLaunch !== false))}
+      ${row('Use the graphics card for ModHaven’s window', 'Smoother scrolling. Turn off to save about 150 MB of memory (a little more CPU while the window is visible). Takes effect after restarting ModHaven.', sw('hardwareAcceleration', st.hardwareAcceleration !== false))}
+    </div>
     <div class="sgroup"><h2>Crash testing</h2>
       ${row('Count a test as working after', 'Used by the automatic culprit finder: if the game is still running after this long, that set of mods is OK.', `<span class="row"><input class="input" type="number" min="15" max="900" data-set="autoTestSeconds" value="${attr(st.autoTestSeconds)}" style="width:86px"> seconds</span>`)}
       ${row('Close the game after a passing test', '', sw('closeGameAfterAutoTest', st.closeGameAfterAutoTest))}
@@ -1746,14 +1983,16 @@ function renderSettings() {
 // ======================================================================
 // EVENTS FROM MAIN
 // ======================================================================
-window.mh.on('downloads', d => { S.downloads = d; renderDownloads(); });
+// Progress events can arrive many times a second: draw at most once per frame (and not at all while the window is hidden).
+let dlFrame = 0;
+window.mh.on('downloads', d => { S.downloads = d; if (!dlFrame) dlFrame = requestAnimationFrame(() => { dlFrame = 0; renderDownloads(); }); });
 window.mh.on('run', async ({ key, status, run }) => {
   S.running[key] = status.running ? status : null;
   renderSidebar();
   if (S.game && S.game.key === key) {
     renderHeroActions();
     if (!status.running && !run.search) {
-      if (['crashed', 'failed-to-start'].includes(run.outcome)) toast(`<b>${esc(S.game.name)} ${run.outcome === 'crashed' ? 'crashed' : "didn't start"}</b>${run.culprits[0] ? ` — most likely ${esc(nameFor(run.culprits[0].uid))}` : ''}. <a href="#" data-run="${attr(run.id)}">See why</a>`, 'error', 12000);
+      if (['crashed', 'failed-to-start'].includes(run.outcome)) toast(`<b>${esc(S.game.name)} ${run.outcome === 'crashed' ? 'crashed' : "didn't start"}</b>${run.culprits && run.culprits[0] ? ` — most likely ${esc(nameFor(run.culprits[0].uid))}` : ''}. <a href="#" data-run="${attr(run.id)}">See why</a>`, 'error', 12000);
       else if (run.outcome === 'ok' || run.outcome === 'closed-with-errors') toast(`${esc(S.game.name)} closed normally after ${fmtDur(run.durationSec || 0)}. Mods that were on are now marked as working.`, 'ok');
     }
     await reloadProfile();
@@ -1778,6 +2017,8 @@ window.mh.on('external', p => {
 });
 window.mh.on('notice', n => toast(esc(n.text), n.kind === 'error' ? 'error' : n.kind === 'ok' ? 'ok' : 'info', 8000));
 window.mh.on('theme', () => applyTheme());
+// While a game runs: no animations at all (the window is usually minimised anyway).
+window.mh.on('gameMode', ({ running }) => { document.body.classList.toggle('gaming', !!running); });
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if (S.settings.theme === 'system') applyTheme(); });
 
 // Drag mod files onto the window to install them into the open profile.

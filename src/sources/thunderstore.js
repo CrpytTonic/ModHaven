@@ -2,7 +2,7 @@
 // Thunderstore (thunderstore.io) — keyless.
 // Listing/search: cyberstorm API (what the new site uses), 20 results per API page.
 // Fallback: per-community v1 package dump, cached 15 min, filtered/sorted/paged locally.
-const { cleanName, gameSlug, iso, num, mapLimit, qs, extractImages } = require('./_util');
+const { cleanName, gameSlug, iso, num, mapLimit, qs, extractImages, uniqueUrls } = require('./_util');
 
 const BASE = 'https://thunderstore.io';
 const API_PAGE = 20; // cyberstorm listing page size (fixed by the server)
@@ -36,6 +36,8 @@ function versionFromIcon(iconUrl, ns, name) {
 }
 
 function pageUrl(community, ns, name) { return `${BASE}/c/${community}/p/${ns}/${name}/`; }
+// Team (= author) page: every package the team published for this community.
+function teamUrl(community, ns) { return `${BASE}/c/${community}/p/${ns}/`; }
 
 function fromListing(r, community) {
   const ns = r.namespace, name = r.name;
@@ -45,6 +47,7 @@ function fromListing(r, community) {
     gameId: community,
     name: String(name).replace(/_/g, ' '),
     author: ns,
+    authorUrl: teamUrl(community, ns),
     summary: r.description || '',
     version: r.latest_version_number || versionFromIcon(r.icon_url, ns, name),
     updatedAt: iso(r.last_updated || r.version_created),
@@ -52,6 +55,7 @@ function fromListing(r, community) {
     downloads: num(r.download_count),
     likes: num(r.rating_count),
     icon: r.icon_url || null,
+    image: r.icon_url || null, // Thunderstore icons are 256x256; there is no larger picture
     url: pageUrl(community, ns, name),
     categories: (r.categories || []).map(c => c.name),
     nsfw: !!r.is_nsfw,
@@ -68,6 +72,7 @@ function fromV1(p, community) {
     gameId: community,
     name: String(p.name).replace(/_/g, ' '),
     author: p.owner,
+    authorUrl: teamUrl(community, p.owner),
     summary: latest.description || '',
     version: latest.version_number || null,
     updatedAt: iso(p.date_updated),
@@ -75,6 +80,7 @@ function fromV1(p, community) {
     downloads: (p.versions || []).reduce((a, v) => a + num(v.downloads), 0),
     likes: num(p.rating_score),
     icon: latest.icon || null,
+    image: latest.icon || null,
     url: pageUrl(community, p.owner, p.name),
     categories: p.categories || [],
     nsfw: !!p.has_nsfw_content,
@@ -86,7 +92,9 @@ function fromV1(p, community) {
 async function v1List(ctx, community) {
   const hit = v1Cache.get(community);
   if (hit && Date.now() - hit.t < V1_TTL) return hit.list;
-  const list = await ctx.fetchJson(`${BASE}/c/${encodeURIComponent(community)}/api/v1/package/`, { ttl: V1_TTL, timeout: 120000 });
+  const list = await ctx.fetchJson(`${BASE}/c/${encodeURIComponent(community)}/api/v1/package/`, { timeout: 120000 });
+  // These lists can be tens of MB: keep only the most recent community in memory.
+  v1Cache.clear();
   v1Cache.set(community, { t: Date.now(), list });
   return list;
 }
@@ -204,18 +212,37 @@ module.exports = {
       const l = p.latest || {};
       const listing = (p.community_listings || []).find(c => c.community === community) || (p.community_listings || [])[0] || {};
       mod = {
-        source: 'thunderstore', id: `${ns}-${name}`, gameId: community, name: String(name).replace(/_/g, ' '), author: p.owner,
+        source: 'thunderstore', id: `${ns}-${name}`, gameId: community, name: String(name).replace(/_/g, ' '), author: p.owner, authorUrl: teamUrl(community, p.owner),
         summary: l.description || '', version: l.version_number || null, updatedAt: iso(p.date_updated), createdAt: iso(p.date_created),
         downloads: num(p.total_downloads > 0 ? p.total_downloads : l.downloads), likes: num(p.rating_score > 0 ? p.rating_score : 0),
-        icon: l.icon || null, url: pageUrl(community, ns, name), categories: listing.categories || [],
+        icon: l.icon || null, image: l.icon || null, url: pageUrl(community, ns, name), categories: listing.categories || [],
         nsfw: !!listing.has_nsfw_content, deprecated: !!p.is_deprecated, gameVersions: [], websiteUrl: l.website_url || null,
       };
     }
-    try {
-      const r = await ctx.fetchJson(`${BASE}/api/experimental/package/${encodeURIComponent(ns)}/${encodeURIComponent(name)}/${encodeURIComponent(mod.version)}/readme/`, { ttl: 30 * 60 * 1000 });
-      readme = r.markdown || null;
-    } catch (e) { /* no readme */ }
-    return { ...mod, description: readme || mod.summary || '', descriptionFormat: readme ? 'markdown' : 'text', screenshots: extractImages(readme) };
+    // README of the latest version (markdown). Fallback: the site's rendered html of the latest README.
+    let format = 'markdown';
+    if (mod.version) {
+      try {
+        const r = await ctx.fetchJson(`${BASE}/api/experimental/package/${encodeURIComponent(ns)}/${encodeURIComponent(name)}/${encodeURIComponent(mod.version)}/readme/`, { ttl: 30 * 60 * 1000 });
+        readme = (r && typeof r.markdown === 'string' && r.markdown.trim()) ? r.markdown : null;
+      } catch (e) { /* try the rendered one */ }
+    }
+    if (!readme) {
+      try {
+        const r = await ctx.fetchJson(`${BASE}/api/cyberstorm/package/${encodeURIComponent(ns)}/${encodeURIComponent(name)}/latest/readme/`, { ttl: 30 * 60 * 1000 });
+        if (r && typeof r.html === 'string' && r.html.trim()) { readme = r.html; format = 'html'; }
+      } catch (e) { /* no readme */ }
+    }
+    // Thunderstore has no gallery: the pictures are the ones embedded in the README.
+    const screenshots = uniqueUrls(extractImages(readme));
+    return {
+      ...mod,
+      description: readme || mod.summary || '',
+      descriptionFormat: readme ? format : 'text',
+      screenshots,
+      gallery: screenshots.map(url => ({ url, title: null, description: null })),
+      credits: [{ name: mod.author, role: 'Owner', url: mod.authorUrl }],
+    };
   },
 
   async getVersions(ctx, community, modId) {

@@ -11,6 +11,8 @@ const IS_PACKAGED = app.isPackaged;
 const APP_DIR = IS_PACKAGED ? path.dirname(process.execPath) : __dirname;
 store.init(process.env.MH_DATA || APP_DIR, app.getPath('appData'));
 app.setPath('userData', store.root('Program data'));
+// Off = no GPU process work for the window (about half the private memory, slightly more CPU when shown).
+if (store.settings().hardwareAcceleration === false) app.disableHardwareAcceleration();
 
 const games = require('./src/games');
 const catalog = require('./src/catalog');
@@ -21,17 +23,19 @@ const mm = require('./src/modmanager');
 const local = require('./src/localgames');
 const steamart = require('./src/steamart');
 const scanner = require('./src/scanner');
+const net = require('./src/net');
 let SOURCES = [];
 try { SOURCES = require('./src/sources'); } catch (e) { store.log('sources failed to load', e); }
 
 let win = null;
 const send = (ch, data) => { if (win && !win.isDestroyed()) win.webContents.send('evt', ch, data); };
 installer.setEmitter(send);
-launcher.setEmitter((ch, d) => { send(ch, d); });
-analysis.setEmitter(send);
+launcher.setEmitter((ch, d) => { send(ch, d); if (ch === 'run') syncGameMode(); });
+analysis.setEmitter((ch, d) => { send(ch, d); if (ch === 'search') syncGameMode(); });
 mm.init(SOURCES, send);
 
-if (!app.requestSingleInstanceLock()) { app.quit(); }
+const PRIMARY = app.requestSingleInstanceLock();
+if (!PRIMARY) app.quit();
 app.on('second-instance', (_e, argv) => {
   const link = argv.find(a => /^nxm:\/\//i.test(a));
   if (link) handleNxm(link);
@@ -48,7 +52,7 @@ function createWindow() {
     backgroundColor: themeNow() === 'dark' ? '#0f1117' : '#f3f4f8',
     titleBarStyle: 'hidden', titleBarOverlay: { ...THEME_BAR[themeNow()], height: 38 },
     title: 'ModHaven by ' + AUTHOR, icon: path.join(__dirname, 'app', 'icon.png'), show: false,
-    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false },
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false, backgroundThrottling: true },
   });
   if (st.maximized) win.maximize();
   win.loadFile(path.join(__dirname, 'app', 'index.html'));
@@ -66,6 +70,13 @@ function createWindow() {
 function openUrl(url) { if (/^https?:\/\//i.test(url)) shell.openExternal(url); }
 
 // ---------- IPC ----------
+const gameOf = key => { const g = key && games.get(key); if (!g) throw new Error('This game is not in ModHaven any more — open it again from the game list'); return g; };
+const profileOf = (key, name) => { const p = games.profile(key, name); if (!p) throw new Error(`Profile "${name}" not found`); return p; };
+const modOf = (key, name, uid) => { const m = profileOf(key, name).mods.find(x => x.uid === uid); if (!m) throw new Error('That mod is not in this profile any more'); return m; };
+const sourceOf = id => { const s = mm.source(id); if (!s) throw new Error(`Unknown mod site "${id}"`); return s; };
+// Changing the game folder while the game runs would fail half-way on files the game has open.
+const notRunning = key => { if (launcher.status(key).running) throw new Error('Close the game first — its files are in use while it runs'); };
+const safeRunId = id => { const r = path.basename(String(id || '')); if (!r || r === '.' || r === '..') throw new Error('Bad run id'); return r; };
 const handlers = {
   'app:info': () => ({ version: app.getVersion(), author: AUTHOR, homepage: HOMEPAGE, dataRoot: store.ROOT, packaged: IS_PACKAGED, sevenZip: !!installer.find7z(),
     sources: SOURCES.map(s => ({ id: s.id, name: s.name, color: s.color, site: s.site, needsKey: !!s.needsKey, keylessBrowse: !!s.keylessBrowse, keyHelp: s.keyHelp || '' })) }),
@@ -80,22 +91,24 @@ const handlers = {
   'theme:resolved': () => themeNow(),
   'titlebar:set': colors => { try { win.setTitleBarOverlay({ ...colors, height: 38 }); } catch { } },
 
-  'catalog:get': async ({ force } = {}) => catalog.build(SOURCES, s => mm.ctxFor(s), { force }),
+  // While a game runs: the saved game list is used even when old, and artwork lookups wait until it closes.
+  'catalog:get': async ({ force } = {}) => catalog.build(SOURCES, s => mm.ctxFor(s), { force, preferCache: !force && gameMode }),
   'local:scan': () => local.scan(true),
-  'art:lookup': name => steamart.lookup(name),
-  'external:quick': ({ key, profile }) => scanner.scan(games.get(key), { mm, profile }),
-  'external:scan': ({ key, profile }) => scanner.scan(games.get(key), { mm, profile, deep: true, onProgress: p => send('external', { key, ...p }) }),
-  'external:search': ({ key, query }) => scanner.searchSites(games.get(key), query, mm),
+  'art:lookup': async name => { await whenIdle(); return steamart.lookup(name); },
+  'external:quick': ({ key, profile }) => scanner.scan(gameOf(key), { mm, profile }),
+  'external:scan': ({ key, profile }) => scanner.scan(gameOf(key), { mm, profile, deep: true, onProgress: p => send('external', { key, ...p }) }),
+  'external:search': ({ key, query }) => scanner.searchSites(gameOf(key), query, mm),
   'external:adopt': async ({ key, profile, picks, replace }) => {
-    const r = await scanner.apply(games.get(key), profile, picks, { replace: replace !== false, mm });
+    notRunning(key);
+    const r = await scanner.apply(gameOf(key), profile, picks, { replace: replace !== false, mm });
     // Nexus free accounts download through the website button: make sure those links reach ModHaven.
     if (r.manual.some(m => /nexusmods\.com/.test(m.pageUrl || '')) && !store.settings().nxmHandler) { store.saveSettings({ nxmHandler: true }); setNxm(true); r.nxmEnabled = true; }
     send('profile', { key, profile });
     return r;
   },
-  'external:unlink': ({ key, profile, uid }) => { const e = scanner.unlink(games.get(key), profile, uid); send('profile', { key, profile }); return e; },
-  'external:ignore': ({ key, keys }) => scanner.ignore(games.get(key), keys),
-  'external:unignore': key => { const g = games.get(key); g.externalIgnored = []; games.save(g); return true; },
+  'external:unlink': ({ key, profile, uid }) => { notRunning(key); const e = scanner.unlink(gameOf(key), profile, uid); send('profile', { key, profile }); return e; },
+  'external:ignore': ({ key, keys }) => scanner.ignore(gameOf(key), keys),
+  'external:unignore': key => { const g = gameOf(key); g.externalIgnored = []; games.save(g); return true; },
   'games:managed': () => games.list(),
   'games:open': async entry => {
     const g = await games.open(entry);
@@ -103,12 +116,20 @@ const handlers = {
     return g;
   },
   'games:get': key => games.get(key),
-  'games:save': patch => { const g = { ...games.get(patch.key), ...patch }; games.save(g); return g; },
-  'games:refreshVersion': async key => { const g = games.get(key); const r = await games.refreshVersion(g); games.save(g); return { game: g, ...r }; },
-  'games:dismissVersionNotice': key => { const g = games.get(key); delete g.versionChangedNotice; games.save(g); return g; },
-  'games:forget': key => { installer.undeploy(games.get(key)); fs.rmSync(games.gdir(key), { recursive: true, force: true }); return true; },
-  'games:guessExe': key => { const g = games.get(key); return g.installPath ? local.guessExe(g.installPath, g.name) : null; },
-  'games:layout': key => installer.resolveLayout(games.get(key)),
+  'games:save': patch => { const g = { ...gameOf(patch && patch.key), ...patch }; games.save(g); return g; },
+  'games:refreshVersion': async key => {
+    const g = gameOf(key);
+    const r = await games.refreshVersion(g);
+    // Save the version fields on top of a fresh read, so settings saved meanwhile aren't undone.
+    const cur = games.get(key) || g;
+    for (const k of ['gameVersion', 'gameVersionUpdatedAt', 'versionHistory', 'versionChangedNotice', 'updatePending', 'publicVersion', 'publicVersionDate', 'pendingVersion']) if (k in g) cur[k] = g[k];
+    games.save(cur);
+    return { game: cur, ...r };
+  },
+  'games:dismissVersionNotice': key => { const g = gameOf(key); delete g.versionChangedNotice; games.save(g); return g; },
+  'games:forget': key => { notRunning(key); const g = games.get(key); if (g) installer.undeploy(g); fs.rmSync(games.gdir(key), { recursive: true, force: true }); return true; },
+  'games:guessExe': key => { const g = gameOf(key); return g.installPath ? local.guessExe(g.installPath, g.name) : null; },
+  'games:layout': key => installer.resolveLayout(gameOf(key)),
 
   'dialog:pick': async ({ kind, title, filters, multi }) => {
     const r = await dialog.showOpenDialog(win, { title, filters, properties: [kind === 'folder' ? 'openDirectory' : 'openFile', ...(multi ? ['multiSelections'] : [])] });
@@ -120,27 +141,27 @@ const handlers = {
   'profiles:create': ({ key, name, from }) => games.createProfile(key, name, from),
   'profiles:rename': ({ key, from, to }) => games.renameProfile(key, from, to),
   'profiles:delete': ({ key, name }) => { games.deleteProfile(key, name); return true; },
-  'profiles:select': ({ key, name }) => { const g = games.get(key); g.activeProfile = name; games.save(g); return g; },
+  'profiles:select': ({ key, name }) => { const g = gameOf(key); profileOf(key, name); g.activeProfile = name; games.save(g); return g; },
   'profiles:export': ({ key, name }) => games.exportProfile(key, name),
   'profiles:import': async ({ key, code, name }) => {
     const data = games.parseShareCode(code);
     const p = games.createProfile(key, name || data.name + ' (imported)');
     const res = { installed: [], manual: [], errors: [] };
-    for (const m of data.mods) {
+    for (const m of data.mods || []) {
       try {
         const r = await mm.install(key, p.name, { source: m.s, gameId: m.g, modId: m.i, versionId: m.v });
         res.installed.push(...r.installed); res.manual.push(...r.manual);
       } catch (e) { res.errors.push(`${m.n}: ${e.message}`); }
     }
-    const prof = games.profile(key, p.name);
-    for (const m of data.mods) { const x = prof.mods.find(y => y.uid === `${m.s}:${m.i}`); if (x) x.enabled = !!m.e; }
+    const prof = profileOf(key, p.name);
+    for (const m of data.mods || []) { const x = prof.mods.find(y => y.uid === `${m.s}:${m.i}`); if (x) x.enabled = !!m.e; }
     games.saveProfile(key, prof);
     return { profile: p.name, ...res };
   },
 
   'mods:browse': async ({ key, query, sort, page, sources, gameVersion, category }) => browse(key, { query, sort, page, sources, gameVersion, category }),
   'mods:details': async ({ source, gameId, modId }) => {
-    const s = mm.source(source);
+    const s = sourceOf(source);
     const ctx = mm.ctxFor(s);
     const [info, versions] = await Promise.all([s.getMod(ctx, gameId, modId), s.getVersions(ctx, gameId, modId).catch(e => { store.log('versions', e); return []; })]);
     return { ...info, versions: versions.slice(0, 60) };
@@ -148,21 +169,20 @@ const handlers = {
   'mods:install': async ({ key, profile, source, gameId, modId, versionId }) => mm.install(key, profile, { source, gameId, modId, versionId }),
   // "Replace with this page's mod": the user chose the page's release over their own copy.
   'mods:replaceFromPage': async ({ key, profile, uid }) => {
-    const m = games.profile(key, profile).mods.find(x => x.uid === uid);
-    if (!m) throw new Error('Mod not found');
+    const m = modOf(key, profile, uid);
     const r = await mm.install(key, profile, { source: m.source, gameId: m.gameId, modId: m.id });
     if (r.manual.length && /nexusmods\.com/.test(r.manual[0].pageUrl || '') && !store.settings().nxmHandler) { store.saveSettings({ nxmHandler: true }); setNxm(true); r.nxmEnabled = true; }
     return r;
   },
   'mods:installFileFor': ({ key, profile, uid, path: p }) => mm.installFileFor(key, profile, uid, p),
-  'mods:installLocal': async ({ key, profile, paths }) => { const out = []; for (const p of paths) out.push(await mm.installLocal(key, profile, p)); return out; },
+  'mods:installLocal': async ({ key, profile, paths }) => { const out = []; for (const p of paths || []) out.push(await mm.installLocal(key, profile, p)); return out; },
   'mods:uninstall': ({ key, profile, uid }) => mm.uninstall(key, profile, uid),
   'mods:update': ({ key, profile, uid }) => {
-    const m = games.profile(key, profile).mods.find(x => x.uid === uid);
+    const m = modOf(key, profile, uid);
     return mm.install(key, profile, { source: m.source, gameId: m.gameId, modId: m.id, versionId: m.latest ? m.latest.versionId : null });
   },
   'mods:patch': ({ key, profile, uid, patch }) => {
-    const p = games.profile(key, profile);
+    const p = profileOf(key, profile);
     const allowed = ['enabled', 'notes', 'pinned', 'autoUpdate'];
     for (const m of p.mods) if (m.uid === uid) for (const k of allowed) if (k in patch) m[k] = patch[k];
     // Turning a mod on turns its dependencies on too.
@@ -173,9 +193,9 @@ const handlers = {
     games.saveProfile(key, p);
     return p;
   },
-  'mods:setAll': ({ key, profile, enabled }) => { const p = games.profile(key, profile); for (const m of p.mods) m.enabled = enabled; games.saveProfile(key, p); return p; },
+  'mods:setAll': ({ key, profile, enabled }) => { const p = profileOf(key, profile); for (const m of p.mods) m.enabled = enabled; games.saveProfile(key, p); return p; },
   'mods:reorder': ({ key, profile, uids }) => {
-    const p = games.profile(key, profile);
+    const p = profileOf(key, profile);
     const pos = new Map(uids.map((u, i) => [u, i]));
     p.mods.sort((a, b) => (pos.get(a.uid) ?? 1e9) - (pos.get(b.uid) ?? 1e9));
     p.mods.forEach((m, i) => { m.order = i; });
@@ -183,14 +203,17 @@ const handlers = {
     return p;
   },
   'mods:openFolder': ({ key, uid, profile }) => {
-    const m = games.profile(key, profile).mods.find(x => x.uid === uid);
-    shell.openPath(installer.stageDir(games.get(key), m));
+    const m = modOf(key, profile, uid);
+    const g = gameOf(key);
+    const dir = installer.findStage(g, m) || installer.stageDir(g, m);
+    if (!fs.existsSync(dir)) throw new Error("ModHaven's copy of this mod is missing — reinstall it");
+    shell.openPath(dir);
     return true;
   },
   'mods:checkUpdates': ({ key, profile }) => mm.checkUpdates(key, profile),
   'mods:checkAll': () => mm.checkAll(),
-  'mods:deploy': ({ key, profile }) => installer.deploy(games.get(key), games.profile(key, profile)),
-  'mods:undeploy': key => installer.undeploy(games.get(key)),
+  'mods:deploy': ({ key, profile }) => { notRunning(key); return installer.deploy(gameOf(key), profileOf(key, profile)); },
+  'mods:undeploy': key => { notRunning(key); return installer.undeploy(gameOf(key)); },
 
   'run:launch': ({ key, profile, vanilla }) => launcher.launch(key, { profile, vanilla }),
   'run:stop': key => launcher.stop(key),
@@ -198,12 +221,12 @@ const handlers = {
   'run:list': key => launcher.runs(key),
   'run:setOutcome': ({ key, runId, outcome }) => launcher.setOutcome(key, runId, outcome),
   'run:readLog': ({ key, runId, name }) => {
-    const f = path.join(games.gdir(key, 'crashlogs', runId), path.basename(name));
+    const f = path.join(games.gdir(key, 'crashlogs', safeRunId(runId)), path.basename(String(name || '')));
     if (/\.(dmp|mdmp)$/i.test(f)) return '(binary crash dump — open the folder to send it to the mod author)';
     try { const t = fs.readFileSync(f, 'utf8'); return t.length > 400000 ? t.slice(-400000) : t; } catch (e) { return 'Could not read: ' + e.message; }
   },
-  'run:openFolder': ({ key, runId }) => { const d = games.gdir(key, 'crashlogs', runId); fs.mkdirSync(d, { recursive: true }); shell.openPath(d); return true; },
-  'run:clear': key => { launcher.runs(key); store.writeJson(games.gdir(key, 'runs.json'), []); analysis.clearVerdicts(key); return true; },
+  'run:openFolder': ({ key, runId }) => { const d = games.gdir(key, 'crashlogs', safeRunId(runId)); fs.mkdirSync(d, { recursive: true }); shell.openPath(d); return true; },
+  'run:clear': key => { store.writeJson(games.gdir(key, 'runs.json'), []); analysis.clearVerdicts(key); return true; },
 
   'analysis:get': ({ key, profile }) => analysis.analyse(key, profile),
   'analysis:matrix': ({ key, profile }) => analysis.matrix(key, profile),
@@ -213,18 +236,19 @@ const handlers = {
 
   'config:list': ({ key, profile }) => configFiles(key, profile),
   'config:read': ({ file }) => { assertConfigPath(file); return fs.readFileSync(file, 'utf8'); },
-  'config:write': ({ file, text }) => { assertConfigPath(file); fs.copyFileSync(file, file + '.bak'); fs.writeFileSync(file, text); return true; },
+  'config:write': ({ file, text }) => { assertConfigPath(file); if (typeof text !== 'string') throw new Error('Nothing to save'); if (fs.existsSync(file)) fs.copyFileSync(file, file + '.bak'); fs.writeFileSync(file, text); return true; },
 
   'downloads:list': () => installer.dlState(),
   'downloads:clear': () => installer.clearDownloads(),
   'shell:url': url => openUrl(url),
-  'shell:path': p => shell.openPath(p),
+  // Folders only: opening a file here would run it if it were a program (e.g. one inside a mod download).
+  'shell:path': p => { let dir = false; try { dir = fs.statSync(String(p)).isDirectory(); } catch { } if (!dir) throw new Error('Folder not found'); return shell.openPath(String(p)); },
   'shell:dataFolder': () => shell.openPath(store.ROOT),
-  'shell:gameFolder': key => { const g = games.get(key); if (g.installPath) shell.openPath(g.installPath); return !!g.installPath; },
+  'shell:gameFolder': key => { const g = gameOf(key); if (g.installPath) shell.openPath(g.installPath); return !!g.installPath; },
   'cache:clear': () => { fs.rmSync(store.root('cache'), { recursive: true, force: true }); fs.mkdirSync(store.root('cache')); return true; },
-  'downloads:clearFiles': () => { fs.rmSync(store.root('downloads'), { recursive: true, force: true }); fs.mkdirSync(store.root('downloads')); return true; },
+  'downloads:clearFiles': () => { if (installer.dlState().some(d => d.state === 'downloading')) throw new Error('Wait for the downloads to finish first'); fs.rmSync(store.root('downloads'), { recursive: true, force: true }); fs.mkdirSync(store.root('downloads')); return true; },
   'keys:test': async id => {
-    const s = mm.source(id);
+    const s = sourceOf(id);
     const games0 = await s.listGames(mm.ctxFor(s));
     if (!games0.length) throw new Error(`${s.name} accepted the key but returned no games`);
     return { ok: true, games: games0.length };
@@ -240,7 +264,7 @@ for (const [ch, fn] of Object.entries(handlers)) {
 
 // ---------- browse: every source for one game, merged ----------
 async function browse(key, { query = '', sort = 'popular', page = 0, sources: want, gameVersion, category }) {
-  const g = games.get(key);
+  const g = gameOf(key);
   const st = store.settings();
   const ids = Object.keys(g.sources || {}).filter(id => st.sources[id] !== false && (!want || !want.length || want.includes(id)));
   const per = Math.max(10, Math.ceil(st.pageSize / Math.max(1, ids.length)) + 4);
@@ -277,7 +301,7 @@ async function browse(key, { query = '', sort = 'popular', page = 0, sources: wa
 
 // ---------- config editor ----------
 function configRoots(key, profile) {
-  const g = games.get(key);
+  const g = gameOf(key);
   const dep = installer.deployedInfo(g);
   const roots = [];
   if (dep && dep.profile === profile && g.installPath) {
@@ -299,11 +323,12 @@ function configFiles(key, profile) {
   return out.sort((a, b) => a.name.localeCompare(b.name));
 }
 function assertConfigPath(file) {
+  if (typeof file !== 'string' || !file) throw new Error('Not a mod config file');
   const ok = games.list().some(g => {
     const roots = [g.installPath && path.join(g.installPath, 'BepInEx', 'config'), g.installPath && path.join(g.installPath, 'UserData'), g.installPath && path.join(g.installPath, 'MelonLoader'), games.gdir(g.key, 'profiles')].filter(Boolean);
     return roots.some(r => path.resolve(file).startsWith(path.resolve(r) + path.sep));
   });
-  if (!ok || !/\.(cfg|ini|json|toml|yaml|yml|txt|xml)$/i.test(file)) throw new Error('Not a mod config file');
+  if (!ok || !/\.(cfg|ini|json|toml|yaml|yml|txt|xml)$/i.test(String(file))) throw new Error('Not a mod config file');
 }
 
 // ---------- Nexus "Mod Manager Download" links ----------
@@ -330,15 +355,48 @@ async function handleNxm(link) {
   } catch (e) { store.log('nxm download failed', link.replace(/key=[^&]+/, 'key=…'), e); send('notice', { kind: 'error', text: 'Nexus download failed: ' + e.message }); }
 }
 
+// ---------- while a game is running ----------
+// ModHaven stays out of the way: its window is minimised (setting), background update checks and
+// artwork lookups wait until the game closes, and the in-memory web cache is dropped.
+let gameMode = false;
+let minimizedByUs = false;
+let updatePending = false;
+let idleWaiters = [];
+const busy = () => launcher.anyRunning() || analysis.anyRunning();
+const whenIdle = () => (gameMode ? new Promise(r => idleWaiters.push(r)) : Promise.resolve());
+function syncGameMode() {
+  const on = busy();
+  if (on === gameMode) return;
+  gameMode = on;
+  send('gameMode', { running: on });
+  const w = win && !win.isDestroyed() ? win : null;
+  if (on) {
+    net.clearMemo();
+    if (w && store.settings().minimizeOnLaunch && w.isVisible() && !w.isMinimized()) { w.minimize(); minimizedByUs = true; }
+  } else {
+    // Bring the window back (without taking focus) only if we were the ones who minimised it.
+    if (w && minimizedByUs && w.isMinimized()) w.showInactive();
+    minimizedByUs = false;
+    const waiting = idleWaiters; idleWaiters = [];
+    for (const r of waiting) r();
+    if (updatePending) { updatePending = false; const t = setTimeout(runUpdateCheck, 60e3); if (t.unref) t.unref(); }
+  }
+}
+
 // ---------- background update checks ----------
 let updTimer = null;
+let updRunning = false;
 function scheduleUpdates() {
   clearInterval(updTimer);
+  updTimer = null;
   const st = store.settings();
   const mins = Math.max(10, Number(st.updateIntervalMin) || 60);
   updTimer = setInterval(runUpdateCheck, mins * 60e3);
 }
 async function runUpdateCheck() {
+  if (busy()) { updatePending = true; return; } // never download or redeploy while a game runs
+  if (updRunning) return;
+  updRunning = true;
   try {
     send('updates', { state: 'checking' });
     const res = await mm.checkAll();
@@ -346,9 +404,11 @@ async function runUpdateCheck() {
     const available = res.reduce((n, r) => n + r.available.length, 0);
     send('updates', { state: 'done', updated, available, at: new Date().toISOString() });
   } catch (e) { send('updates', { state: 'error', error: e.message }); }
+  finally { updRunning = false; }
 }
 
 app.whenReady().then(() => {
+  if (!PRIMARY) return;
   createWindow();
   const st = store.settings();
   if (st.nxmHandler) setNxm(true);

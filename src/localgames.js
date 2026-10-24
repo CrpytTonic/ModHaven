@@ -154,7 +154,7 @@ let cache = null;
 async function scan(force) {
   if (cache && !force) return cache;
   const lists = await Promise.all([steamGames(), epicGames(), gogGames()].map(p => p.catch(() => [])));
-  cache = lists.flat().sort((a, b) => a.name.localeCompare(b.name));
+  cache = lists.flat().filter(g => g && g.name).sort((a, b) => String(a.name).localeCompare(String(b.name)));
   return cache;
 }
 

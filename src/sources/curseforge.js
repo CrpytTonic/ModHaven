@@ -1,6 +1,6 @@
 // ModHaven — Copyright (c) 2026 CrpytTonic. All rights reserved.
 // CurseForge (api.curseforge.com) — needs a free API key (ctx.keys.curseforge, header x-api-key).
-const { cleanName, gameSlug, iso, num, noKey, qs } = require('./_util');
+const { cleanName, gameSlug, iso, num, noKey, qs, uniqueGallery } = require('./_util');
 
 const API = 'https://api.curseforge.com';
 const WEB = 'https://www.curseforge.com';
@@ -54,6 +54,7 @@ function fromMod(m) {
     gameId: String(m.gameId),
     name: m.name,
     author: (m.authors && m.authors[0] && m.authors[0].name) || null,
+    authorUrl: (m.authors && m.authors[0] && m.authors[0].url) || null,
     summary: m.summary || '',
     version: lf ? (lf.displayName || lf.fileName) : null,
     updatedAt: iso(m.dateReleased || m.dateModified),
@@ -61,6 +62,7 @@ function fromMod(m) {
     downloads: num(m.downloadCount),
     likes: num(m.thumbsUpCount),
     icon: (m.logo && (m.logo.thumbnailUrl || m.logo.url)) || null,
+    image: (m.logo && (m.logo.url || m.logo.thumbnailUrl)) || null,
     url: modUrl(m),
     categories: (m.categories || []).map(c => c.name),
     nsfw: false,
@@ -135,11 +137,15 @@ module.exports = {
       cf(ctx, `/v1/mods/${encodeURIComponent(modId)}`, { ttl: 10 * 60 * 1000 }).then(j => j.data),
       cf(ctx, `/v1/mods/${encodeURIComponent(modId)}/description`, { ttl: 30 * 60 * 1000 }).then(j => j.data).catch(() => null),
     ]);
+    const gallery = uniqueGallery((m.screenshots || []).map(x => ({ url: x.url || x.thumbnailUrl, title: x.title, description: x.description })));
     return {
       ...fromMod(m),
       description: desc || m.summary || '',
       descriptionFormat: desc ? 'html' : 'text',
-      screenshots: (m.screenshots || []).map(s => s.url).filter(Boolean),
+      // screenshots[].url is the full-size upload (thumbnailUrl is the small one)
+      screenshots: gallery.map(g => g.url),
+      gallery,
+      credits: (m.authors || []).filter(a => a && a.name).map((a, i) => ({ name: a.name, role: i === 0 ? 'Owner' : 'Author', url: a.url || null })),
     };
   },
 

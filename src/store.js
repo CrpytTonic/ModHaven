@@ -20,10 +20,12 @@ const DEFAULT_SETTINGS = {
   pageSize: 40,
   autoTestSeconds: 90,        // "survived this long" = passing run during culprit search
   closeGameAfterAutoTest: true,
-  minimizeOnLaunch: false,
+  minimizeOnLaunch: true,     // minimise ModHaven while a game it started is running
+  hardwareAcceleration: true, // GPU-drawn window; off = less memory, a little more CPU (needs a restart)
   keepOldVersions: 3,
   nxmHandler: false,
   lastGame: null,
+  settingsRev: 2,
 };
 
 function init(appDir, fallbackDir) {
@@ -60,6 +62,9 @@ let settingsCache = null;
 function settings() {
   if (!settingsCache) {
     const saved = readJson(root('settings.json'), {});
+    // Rev 2: "minimise while a game runs" became the default; older files saved the old default
+    // (there was no switch for it before), so it is turned on once.
+    if (!(saved.settingsRev >= 2)) { delete saved.minimizeOnLaunch; saved.settingsRev = 2; }
     settingsCache = { ...DEFAULT_SETTINGS, ...saved,
       keys: { ...DEFAULT_SETTINGS.keys, ...(saved.keys || {}) },
       sources: { ...DEFAULT_SETTINGS.sources, ...(saved.sources || {}) } };

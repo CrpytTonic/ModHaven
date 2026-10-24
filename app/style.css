@@ -55,8 +55,11 @@ svg { flex: none; }
 #crumbs { display: flex; align-items: center; gap: 6px; color: var(--text-3); font-size: 13px; min-width: 0; }
 #crumbs b { color: var(--text-2); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #titleStatus { margin-left: auto; font-size: 12px; color: var(--text-3); display: flex; gap: 10px; align-items: center; }
-.pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 0 var(--green); animation: pulse 1.6s infinite; }
-@keyframes pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--green) 60%, transparent); } 100% { box-shadow: 0 0 0 8px transparent; } }
+/* "Running" dot: a few compositor-only pulses when the game starts, then a static glow, so ModHaven
+   doesn't keep drawing frames for the whole time the user is playing. */
+.pulse { position: relative; width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 25%, transparent); }
+.pulse::after { content: ""; position: absolute; inset: 0; border-radius: 50%; background: var(--green); opacity: 0; animation: pulse 1.6s ease-out 3; }
+@keyframes pulse { from { transform: scale(1); opacity: .6; } to { transform: scale(2.6); opacity: 0; } }
 
 #shell { display: flex; height: calc(100% - 38px); }
 
@@ -210,15 +213,22 @@ html.compact .mrow .msum { display: none; }
 .mrow:hover .handle { opacity: 1; }
 .mrow.dragging { opacity: .4; }
 .mrow.drop-above::before, .mrow.drop-below::after { content: ""; position: absolute; left: 8px; right: 8px; height: 2px; background: var(--accent); border-radius: 2px; }
-.mrow.drop-above::before { top: -1px; } .mrow.drop-below::after { bottom: -1px; }
+.mrow.drop-above::before { top: 0; } .mrow.drop-below::after { bottom: 0; }
+/* Long lists: rows scrolled out of view skip layout and paint entirely. */
+.list > .mrow { content-visibility: auto; contain-intrinsic-size: auto var(--row-h); }
+.mrow .mname { flex: 0 1 auto; }
+.mrow .mauth { flex: 0 1000 auto; min-width: 48px; color: var(--text-3); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mrow .mtop > .badge, .mrow .mtop > .pill { flex: none; }
 .tri { width: 18px; height: 18px; flex: none; cursor: help; }
 .list-end { text-align: center; color: var(--text-3); padding: 18px; font-size: 12.5px; }
 .legend { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
 .legend span { display: inline-flex; align-items: center; gap: 5px; }
 .legend .tri { width: 14px; height: 14px; }
 
-.skel { background: linear-gradient(90deg, var(--surface-2), var(--surface-3), var(--surface-2)); background-size: 200% 100%; animation: sk 1.2s infinite; border-radius: 6px; }
-@keyframes sk { to { background-position: -200% 0; } }
+/* Loading placeholders fade (opacity runs on the compositor; a moving gradient repaints every frame).
+   They only exist while something loads and are replaced when it arrives. */
+.skel { background: var(--surface-3); animation: sk .9s ease-in-out infinite alternate; border-radius: 6px; }
+@keyframes sk { from { opacity: .45; } to { opacity: .9; } }
 
 /* ---------- detail panel ---------- */
 .dhead { padding: 22px 24px 16px; display: flex; gap: 16px; align-items: flex-start; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--bg-2); z-index: 2; }
@@ -249,8 +259,49 @@ html.compact .mrow .msum { display: none; }
 .desc td, .desc th { border: 1px solid var(--border); padding: 5px 9px; }
 .desc details { background: var(--surface-2); border-radius: 8px; padding: 6px 10px; }
 .desc [style*="color"] { color: inherit !important; } /* site colours are often unreadable on our themes */
-.shots { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; }
-.shots img { height: 120px; border-radius: 8px; cursor: zoom-in; border: 1px solid var(--border); }
+.desc > :first-child { margin-top: 0; } .desc > :last-child { margin-bottom: 0; }
+.desc p { margin: 0 0 .8em; }
+.desc ul, .desc ol { padding-left: 22px; margin: 0 0 .8em; }
+.desc hr { border: 0; border-top: 1px solid var(--border); margin: 1em 0; }
+.desc a { overflow-wrap: anywhere; }
+.desc a:not([href]) { color: inherit; text-decoration: none; }
+.desc img { vertical-align: middle; }
+.desc table { max-width: 100%; }
+.desc summary { cursor: pointer; font-weight: 600; }
+.desc .yt { display: inline-flex; flex-direction: column; gap: 4px; max-width: 100%; }
+.desc .yt img { max-width: min(100%, 480px); }
+.desc .yt-label { font-weight: 600; }
+
+/* author credit, hero image, credits list */
+.dhead .by .author { color: var(--text); font-weight: 600; text-decoration: none; }
+.dhead .by a.author { color: var(--accent-2); }
+html[data-theme="light"] .dhead .by a.author { color: color-mix(in srgb, var(--accent) 80%, #000); }
+.dhead .by a.author:hover { text-decoration: underline; }
+.dhero { position: relative; height: 220px; overflow: hidden; isolation: isolate; background: var(--surface-3); border-bottom: 1px solid var(--border); }
+.dhero::before { content: ""; position: absolute; inset: -30px; background: var(--art) center / cover no-repeat; filter: blur(26px) saturate(1.3) brightness(.7); z-index: 0; }
+.dhero img { position: relative; z-index: 1; display: block; width: 100%; height: 100%; object-fit: contain; }
+.credits { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.credits li { display: inline-flex; align-items: baseline; gap: 6px; padding: 4px 10px; border-radius: 8px; background: var(--chip); font-size: 13px; }
+.credits li .author { color: var(--text); font-weight: 600; text-decoration: none; }
+.credits li a.author { color: var(--accent-2); }
+html[data-theme="light"] .credits li a.author { color: color-mix(in srgb, var(--accent) 80%, #000); }
+.credits li span { color: var(--text-3); font-size: 12px; }
+.credits li { align-items: center; max-width: 100%; min-width: 0; }
+.credits li span { min-width: 0; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-height: 1.35; }
+.credits li .author { flex: none; }
+.credits .cav { width: 18px; height: 18px; border-radius: 50%; object-fit: cover; background: var(--surface-3); flex: none; }
+.card h3 .btn { text-transform: none; letter-spacing: 0; font-weight: 500; color: var(--text-2); }
+.desc .bb-youtube { display: inline-block; max-width: min(100%, 480px); }
+.card h3 .n { background: var(--chip); color: var(--text-2); border-radius: 10px; padding: 0 7px; font-size: 11.5px; letter-spacing: 0; }
+.card h3 .grow { flex: 1; }
+.detailcol .card { scroll-margin-top: 120px; } /* not hidden under the sticky header when scrolled to */
+.card h3 .hint { text-transform: none; letter-spacing: 0; font-weight: 400; font-size: 12px; }
+
+/* screenshot strip: thumbnails load lazily as they scroll into view */
+.shots { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 6px; scroll-snap-type: x proximity; }
+.shot { flex: none; height: 124px; min-width: 60px; padding: 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--surface-3); cursor: zoom-in; scroll-snap-align: start; }
+.shot:hover, .shot:focus-visible { border-color: var(--accent); outline: none; }
+.shot img { display: block; height: 100%; width: auto; max-width: 320px; object-fit: cover; }
 .vlist { display: flex; flex-direction: column; }
 .vrow { display: flex; align-items: center; gap: 10px; padding: 8px 4px; border-bottom: 1px solid var(--border); font-size: 13px; }
 .vrow:last-child { border-bottom: 0; }
@@ -373,8 +424,26 @@ body.dropping #dropHint { display: grid; }
 .menu button:hover { background: var(--hover); }
 .menu button.danger { color: var(--red); }
 .menu hr { border: 0; border-top: 1px solid var(--border); margin: 4px 0; }
-.lightbox { position: fixed; inset: 0; z-index: 90; background: rgba(0,0,0,.85); display: grid; place-items: center; cursor: zoom-out; }
-.lightbox img { max-width: 92vw; max-height: 92vh; border-radius: 8px; }
+.lightbox { position: fixed; inset: 0; z-index: 90; background: rgba(4,5,8,.9); display: flex; flex-direction: column; color: #eceef6; }
+.lb-stage { flex: 1; min-height: 0; display: grid; place-items: center; padding: 20px 76px 8px; cursor: zoom-out; position: relative; }
+.lb-img { max-width: calc(100vw - 152px); max-height: calc(100vh - 90px); border-radius: 8px; box-shadow: 0 10px 50px rgba(0,0,0,.6); cursor: default; transition: opacity .12s; }
+.lightbox.loading .lb-img { opacity: .35; }
+.lightbox.broken .lb-img { display: none; }
+.lightbox .lb-spin { position: absolute; display: none; width: 34px; height: 34px; border-color: rgba(255,255,255,.2); border-top-color: #fff; }
+.lightbox.loading .lb-spin { display: inline-block; }
+.lb-broken { display: none; color: #b4bbcd; }
+.lightbox.broken .lb-broken { display: block; }
+.lb-btn { position: absolute; width: 48px; height: 48px; border-radius: 50%; border: 1px solid rgba(255,255,255,.18); background: rgba(20,22,30,.7); color: #fff; display: grid; place-items: center; cursor: pointer; }
+.lb-btn:hover, .lb-btn:focus-visible { background: rgba(60,64,80,.9); outline: none; border-color: rgba(255,255,255,.5); }
+.lb-btn svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.lb-prev { left: 16px; top: calc(50% - 44px); } .lb-prev svg { transform: rotate(90deg); }
+.lb-next { right: 16px; top: calc(50% - 44px); } .lb-next svg { transform: rotate(-90deg); }
+.lb-close { right: 16px; top: 16px; width: 40px; height: 40px; }
+.lb-cap { flex: none; display: flex; gap: 14px; align-items: baseline; justify-content: center; padding: 10px 24px 18px; font-size: 13.5px; }
+.lb-cap b { font-weight: 600; }
+.lb-sub { color: #b4bbcd; max-width: 60vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lb-sub:empty { display: none; }
+.lb-count { color: #8790a6; font-variant-numeric: tabular-nums; }
 .muted { color: var(--text-3); }
 .mono { font-family: var(--mono); }
 .spinner { width: 18px; height: 18px; border-radius: 50%; border: 2.5px solid var(--border-strong); border-top-color: var(--accent); animation: spin .7s linear infinite; display: inline-block; }
@@ -446,3 +515,27 @@ html[data-theme="light"] .pill.bad { color: #b01f24; }
 .ext-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 260px; }
 
 .brand .by { font: 500 11.5px var(--font); color: var(--text-3); margin-left: 2px; }
+
+/* Respect "reduce motion": no spinning, fading or sliding. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; }
+}
+
+/* ---------- description formatting from mod pages (BBCode converter / GameBanana) ---------- */
+.desc .bb-size-1 { font-size: .75em; } .desc .bb-size-2 { font-size: .875em; } .desc .bb-size-3 { font-size: 1em; }
+.desc .bb-size-4 { font-size: 1.15em; } .desc .bb-size-5 { font-size: 1.35em; font-weight: 650; }
+.desc .bb-size-6 { font-size: 1.6em; font-weight: 700; } .desc .bb-size-7 { font-size: 1.9em; font-weight: 700; }
+.desc .bb-size-1, .desc .bb-size-2, .desc .bb-size-3, .desc .bb-size-4, .desc .bb-size-5, .desc .bb-size-6, .desc .bb-size-7 { line-height: 1.3; }
+.desc .bb-color { color: var(--accent); }
+html[data-theme="light"] .desc .bb-color { color: color-mix(in srgb, var(--accent) 80%, #000); }
+.desc .bb-align-center { text-align: center; display: block; } .desc .bb-align-right { text-align: right; display: block; }
+.desc .bb-align-left { text-align: left; display: block; } .desc .bb-align-justify { text-align: justify; display: block; }
+.desc .bb-indent { display: block; margin-left: 1.5em; }
+.desc details.bb-spoiler { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; margin: 6px 0; }
+.desc details.bb-spoiler > summary { cursor: pointer; color: var(--text-2); font-weight: 600; }
+.desc .gb-green { color: var(--green); } .desc .gb-red { color: var(--red); } .desc .gb-blue { color: var(--blue); }
+.desc .gb-orange, .desc .gb-yellow { color: var(--yellow); } .desc .gb-purple, .desc .gb-pink { color: var(--accent); }
+.desc .gb-grey, .desc .gb-gray { color: var(--text-3); }
+
+/* While a game runs nothing in ModHaven animates. */
+body.gaming *, body.gaming *::before, body.gaming *::after { animation: none !important; transition: none !important; }

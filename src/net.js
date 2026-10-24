@@ -1,7 +1,29 @@
 // ModHaven — Copyright (c) 2026 CrpytTonic. All rights reserved.
 // Shared HTTP helpers for source adapters (main process, Node 20+ fetch).
 const UA = 'ModHaven/1.0 (desktop mod manager)';
-const memo = new Map(); // url -> {t, data}
+// In-memory cache of parsed JSON: url -> {exp, data, size}. Bounded: expired entries are dropped,
+// and the oldest go first once there are too many or they add up to too much.
+const memo = new Map();
+const MEMO_MAX = 400;
+const MEMO_BYTES = 96 << 20; // rough budget, from Content-Length
+let memoBytes = 0;
+let sweepTimer = null;
+function memoDrop(key) { const e = memo.get(key); if (e) { memoBytes -= e.size; memo.delete(key); } }
+function sweep() {
+  const now = Date.now();
+  for (const [k, e] of memo) if (e.exp <= now) memoDrop(k);
+  if (!memo.size && sweepTimer) { clearInterval(sweepTimer); sweepTimer = null; }
+}
+function memoSet(key, data, ttl, size) {
+  memoDrop(key);
+  memo.set(key, { exp: Date.now() + ttl, data, size });
+  memoBytes += size;
+  if (memo.size > MEMO_MAX || memoBytes > MEMO_BYTES) sweep();
+  for (const k of memo.keys()) { if (memo.size <= MEMO_MAX && memoBytes <= MEMO_BYTES) break; if (k !== key) memoDrop(k); }
+  // Expired entries are freed even when nothing new is fetched (no wake-ups once the cache is empty).
+  if (!sweepTimer) { sweepTimer = setInterval(sweep, 5 * 60e3); if (sweepTimer.unref) sweepTimer.unref(); }
+}
+function clearMemo() { memo.clear(); memoBytes = 0; if (sweepTimer) { clearInterval(sweepTimer); sweepTimer = null; } }
 
 async function request(url, opts = {}) {
   const { headers = {}, method = 'GET', body, timeout = 30000, retries = 2 } = opts;
@@ -38,12 +60,13 @@ async function fetchJson(url, opts = {}) {
   const key = url + '|' + JSON.stringify(opts.headers || {}) + '|' + (opts.body || '');
   if (ttl) {
     const hit = memo.get(key);
-    if (hit && Date.now() - hit.t < ttl) return hit.data;
+    if (hit && Date.now() < hit.exp) return hit.data;
+    if (hit) memoDrop(key);
   }
   const res = await request(url, opts);
   const data = await res.json();
-  if (ttl) memo.set(key, { t: Date.now(), data });
+  if (ttl) memoSet(key, data, ttl, Number(res.headers.get('content-length')) || 64 << 10);
   return data;
 }
 
-module.exports = { request, fetchJson, UA };
+module.exports = { request, fetchJson, clearMemo, UA };

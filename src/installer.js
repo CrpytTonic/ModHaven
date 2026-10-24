@@ -15,30 +15,55 @@ function setEmitter(fn) { emit = fn; }
 // ---------- downloads ----------
 const downloads = new Map(); // id -> state shown in the Downloads panel
 function dlState() { return [...downloads.values()].sort((a, b) => b.started - a.started).slice(0, 100); }
+// Keeps the panel's list (and memory) bounded: the oldest finished entries go first.
+function trimDownloads() {
+  if (downloads.size <= 150) return;
+  for (const [k, v] of [...downloads].sort((a, b) => a[1].started - b[1].started)) {
+    if (downloads.size <= 100) break;
+    if (v.state !== 'downloading') downloads.delete(k);
+  }
+}
 
 async function download(url, dest, { name, headers } = {}) {
   const id = crypto.randomUUID();
   const st = { id, name: name || path.basename(dest), received: 0, total: 0, state: 'downloading', started: Date.now(), error: null };
   downloads.set(id, st);
+  trimDownloads();
   emit('downloads', dlState());
+  const tmp = dest + '.part';
+  let out = null;
   try {
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     const res = await net.request(url, { headers: { Accept: '*/*', ...(headers || {}) }, timeout: 120000 });
     st.total = Number(res.headers.get('content-length')) || 0;
-    const tmp = dest + '.part';
-    const out = fs.createWriteStream(tmp);
+    out = fs.createWriteStream(tmp);
+    // A write error (disk full...) would otherwise be an unhandled 'error' event.
+    let writeErr = null;
+    out.on('error', e => { writeErr = e; });
     let lastEmit = 0;
     for await (const chunk of res.body) {
-      if (!out.write(chunk)) await new Promise(r => out.once('drain', r));
+      if (writeErr) throw writeErr;
+      if (!out.write(chunk)) {
+        await new Promise((r, j) => {
+          const ok = () => { out.off('error', bad); r(); };
+          const bad = e => { out.off('drain', ok); j(e); };
+          out.once('drain', ok); out.once('error', bad);
+        });
+      }
       st.received += chunk.length;
       if (Date.now() - lastEmit > 150) { lastEmit = Date.now(); emit('downloads', dlState()); }
     }
+    if (writeErr) throw writeErr;
     await new Promise((r, j) => out.end(err => (err ? j(err) : r())));
+    if (st.total && st.received < st.total) throw new Error(`Download ended early (${st.received} of ${st.total} bytes)`);
     fs.renameSync(tmp, dest);
     st.state = 'done';
     return dest;
   } catch (e) {
     st.state = 'error'; st.error = e.message;
+    // Close the half-written file so it isn't held open (and can be retried / cleared).
+    if (out && !out.closed) await new Promise(r => { out.once('close', r); out.destroy(); setTimeout(r, 2000); });
+    try { fs.rmSync(tmp, { force: true }); } catch { }
     throw e;
   } finally {
     emit('downloads', dlState());
@@ -47,6 +72,7 @@ async function download(url, dest, { name, headers } = {}) {
 function markDownload(name, state, error) {
   const id = crypto.randomUUID();
   downloads.set(id, { id, name, received: 0, total: 0, state, started: Date.now(), error: error || null });
+  trimDownloads();
   emit('downloads', dlState());
 }
 function clearDownloads() {
@@ -249,14 +275,18 @@ function modFolderOf(files) {
 
 // ModHaven's own copy of each mod lives in games/<game>/mods/<Mod name> [source-id]/<version>/.
 // (Older versions used just "source-id"; those folders are renamed the first time they're used.)
+const tidied = new Set();
 function modStoreDir(game, mod) {
   const parent = games.gdir(game.key, 'mods');
   const tag = store.safeName(`${mod.source}-${mod.id}`);
   const want = store.safeName(`${String(mod.name || mod.id).trim().slice(0, 60)} [${tag}]`);
   let ents = [];
   try { ents = fs.readdirSync(parent); } catch { }
-  // Tidy folders left empty by earlier versions of ModHaven.
-  for (const e of ents) { try { const d = path.join(parent, e); if (!fs.readdirSync(d).length) fs.rmdirSync(d); } catch { } }
+  // Tidy folders left empty by earlier versions of ModHaven (once per game per session: this runs for every mod lookup).
+  if (!tidied.has(game.key)) {
+    tidied.add(game.key);
+    for (const e of ents) { try { const d = path.join(parent, e); if (!fs.readdirSync(d).length) fs.rmdirSync(d); } catch { } }
+  }
   const have = ents.find(e => e === want && fs.existsSync(path.join(parent, e))) || ents.find(e => (e === tag || e.endsWith(` [${tag}]`)) && fs.existsSync(path.join(parent, e)));
   if (have && have !== want) {
     try { fs.renameSync(path.join(parent, have), path.join(parent, want)); } catch { return path.join(parent, have); }
@@ -321,8 +351,14 @@ function pruneOldVersions(game, mod, keep) {
   let vers = [];
   try { vers = fs.readdirSync(parent).map(v => ({ v, t: fs.statSync(path.join(parent, v)).mtimeMs })); } catch { return; }
   vers.sort((a, b) => b.t - a.t);
-  const current = store.safeName(String(mod.versionId));
-  for (const x of vers.slice(Math.max(1, keep))) if (x.v !== current) fs.rmSync(path.join(parent, x.v), { recursive: true, force: true });
+  // Versions any profile still uses stay (another profile can be on an older release), and so does
+  // the copy of the user's own files taken over from the game folder.
+  const inUse = new Set([path.basename(stageDir(game, mod))]);
+  try { for (const p of games.profiles(game.key)) for (const m of p.mods) if (m.uid === mod.uid) inUse.add(path.basename(stageDir(game, m))); } catch { }
+  for (const x of vers.slice(Math.max(1, Number(keep) || 1))) {
+    if (inUse.has(x.v) || / \(your files\)$/.test(x.v)) continue;
+    try { fs.rmSync(path.join(parent, x.v), { recursive: true, force: true }); } catch (e) { store.log('prune old version', x.v, e.message); }
+  }
 }
 
 // ---------- deploy ----------
@@ -369,14 +405,15 @@ function undeploy(game) {
     }
   }
   let removed = 0;
+  const failed = {};
   const rels = Object.keys(dep.files).sort((a, b) => b.length - a.length);
   for (const rel of rels) {
     const p = path.join(root, rel);
-    try { fs.rmSync(p, { force: true }); removed++; } catch { }
+    try { fs.rmSync(p, { force: true }); removed++; } catch (e) { failed[rel] = { ...dep.files[rel], error: e.message }; continue; }
     const bk = path.join(backupDir(game), rel);
     if (dep.files[rel].backup && fs.existsSync(bk)) {
-      fs.mkdirSync(path.dirname(p), { recursive: true });
-      fs.renameSync(bk, p);
+      try { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.renameSync(bk, p); }
+      catch (e) { failed[rel] = { ...dep.files[rel], error: e.message }; continue; }
     }
     // Older deploys didn't record their folders: tidy empty ones, but never the game's own structure.
     if (!dep.dirs) {
@@ -391,6 +428,14 @@ function undeploy(game) {
   for (const rel of (dep.dirs || []).slice().sort((a, b) => b.length - a.length)) {
     const d = path.join(root, rel);
     try { if (!fs.readdirSync(d).length) fs.rmdirSync(d); } catch { }
+  }
+  const nFailed = Object.keys(failed).length;
+  if (nFailed) {
+    // Keep a record of what is still out there (and whose original is still in the backup) so the
+    // next try can finish the job, and say what's wrong instead of carrying on.
+    store.writeJson(deployFile(game), { ...dep, files: failed, at: new Date().toISOString() });
+    const first = Object.entries(failed)[0];
+    throw new Error(`ModHaven couldn't take ${nFailed} mod file${nFailed > 1 ? 's' : ''} out of the game folder (${first[0]}: ${first[1].error}). Close the game or any program using ${nFailed > 1 ? 'them' : 'it'} and try again.`);
   }
   if (dep.layout === 'bepinex' && dep.profile) {
     const cfg = path.join(root, 'BepInEx', 'config');
@@ -474,6 +519,11 @@ function deploy(game, profile, { save = true } = {}) {
       cfgRels.add(r.toLowerCase());
     }
   }
+  const record = () => {
+    const dirs = [...made].map(d => path.relative(root, d).replace(/\\/g, '/')).filter(d => d && !d.startsWith('..'));
+    store.writeJson(deployFile(game), { profile: profile.name, layout, root, files, dirs, at: new Date().toISOString() });
+  };
+  try {
   for (const m of enabled) {
     const dir = stages.get(m.uid);
     if (!dir) { missing.push(m.name); continue; }
@@ -483,7 +533,11 @@ function deploy(game, profile, { save = true } = {}) {
       const dst = path.join(root, rel);
       if (!files[rel] && fs.existsSync(dst)) {
         const bk = path.join(backupDir(game), rel);
-        if (!fs.existsSync(bk)) { fs.mkdirSync(path.dirname(bk), { recursive: true }); fs.renameSync(dst, bk); }
+        fs.mkdirSync(path.dirname(bk), { recursive: true });
+        // An older backup of this path is still there (an earlier run was cut short): it stays the
+        // original, and the file in the game folder is kept next to it instead of being deleted.
+        if (fs.existsSync(bk)) fs.renameSync(dst, `${bk}.kept-${Date.now()}`);
+        else fs.renameSync(dst, bk);
         files[rel] = { uid: m.uid, backup: true };
       } else files[rel] = { uid: m.uid, backup: files[rel] ? files[rel].backup : false };
       linkOrCopy(src, dst, mode, made);
@@ -498,8 +552,10 @@ function deploy(game, profile, { save = true } = {}) {
       files[r] = { uid: 'profile-config', backup: false };
     }
   }
-  const dirs = [...made].map(d => path.relative(root, d).replace(/\\/g, '/')).filter(d => d && !d.startsWith('..'));
-  store.writeJson(deployFile(game), { profile: profile.name, layout, root, files, dirs, at: new Date().toISOString() });
+  } finally {
+    // Written even when a file fails half-way, so undeploy can take out what did go in and put the backups back.
+    record();
+  }
   if (save) games.saveProfile(game.key, profile);
   return { layout, root, count: Object.keys(files).length, missing };
 }

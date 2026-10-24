@@ -73,60 +73,137 @@ function safeUrl(u) {
   return escapeHtml(raw);
 }
 
+
+// YouTube video id from a bare id or any YouTube URL (watch?v=, youtu.be/, embed/, shorts/).
+function youtubeId(s) {
+  s = String(s || '').trim().replace(/&amp;/g, '&');
+  if (/^[\w-]{6,20}$/.test(s)) return s;
+  const m = /(?:youtu\.be\/|[?&]v=|\/embed\/|\/shorts\/|\/v\/)([\w-]{6,20})/i.exec(s);
+  return m ? m[1] : null;
+}
+
+const BB_SIZES = { 1: '0.75em', 2: '0.875em', 3: '1em', 4: '1.2em', 5: '1.5em', 6: '1.8em', 7: '2.2em' };
+const BB_KNOWN = 'b|i|u|s|sup|sub|strike|colou?r|size|font|center|left|right|justify|quote|spoiler|heading|list|url|img|youtube|email|indent';
+
 // BBCode (Nexus flavour, which also mixes in literal <br />) -> small safe HTML subset.
+// Styling is emitted twice: as a class (bb-size-1..7, bb-size-px, bb-color, bb-align-center|left|right|justify,
+// bb-indent, bb-youtube, bb-spoiler) and as an inline style, so the UI can keep either one through its sanitizer.
+// Nested tags are matched innermost-first; tags the author left unclosed are dropped instead of shown.
 function bbcodeToHtml(src) {
   if (!src) return '';
   let s = String(src).replace(/\r\n?/g, '\n').replace(/<br\s*\/?>\s*\n?/gi, '\n');
-  // Nexus sometimes stores a few raw html entities; decode the common ones before escaping.
-  s = s.replace(/&nbsp;/g, ' ').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+  // Nexus stores a few raw html entities; decode them before escaping.
+  s = s.replace(/&#(\d{1,6});/g, (m, n) => { const c = Number(n); return c > 31 && c < 0x110000 ? String.fromCodePoint(c) : ''; })
+    .replace(/&nbsp;/g, ' ').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+  // [code] content is shown verbatim: park it before any other rule runs.
+  const codes = [];
+  s = s.replace(/\[code\]([\s\S]*?)\[\/code\]/gi, (m, x) => { codes.push(x.replace(/^\n+|\n+$/g, '')); return `\u0001${codes.length - 1}\u0001`; });
   s = s.replace(/\[(\w+)=["']([^\]"']*)["']\]/g, '[$1=$2]'); // [size="5"] -> [size=5]
   s = escapeHtml(s);
 
-  const sizes = { 1: '0.75em', 2: '0.875em', 3: '1em', 4: '1.2em', 5: '1.5em', 6: '1.8em', 7: '2.2em' };
+  // body that contains no further opening tag of the given names -> innermost match first
+  const inner = names => `((?:(?!\\[(?:${names})[=\\]\\s])[\\s\\S])*?)`;
+  const R = (open, names, close) => new RegExp(open + inner(names) + close, 'gi');
   const rules = [
-    [/\[(b|i|u|s)\]([\s\S]*?)\[\/\1\]/gi, (m, t, x) => `<${t.toLowerCase()}>${x}</${t.toLowerCase()}>`],
-    [/\[strike\]([\s\S]*?)\[\/strike\]/gi, (m, x) => `<s>${x}</s>`],
-    [/\[url=([^\]]*?)\]([\s\S]*?)\[\/url\]/gi, (m, u, x) => { const h = safeUrl(u); return h ? `<a href="${h}">${x}</a>` : x; }],
-    [/\[url\]([\s\S]*?)\[\/url\]/gi, (m, u) => { const h = safeUrl(u); return h ? `<a href="${h}">${u}</a>` : u; }],
-    [/\[img(?:=[^\]]*|\s+[^\]]*)?\]([\s\S]*?)\[\/img\]/gi, (m, u) => { const h = safeUrl(u); return h ? `<img src="${h}" alt="">` : ''; }],
-    [/\[size=(\d+)(?:px|pt)?\]([\s\S]*?)\[\/size\]/gi, (m, n, x) => { const k = Number(n); const v = sizes[k] || (k > 7 ? Math.min(k, 40) + 'px' : '1em'); return `<span style="font-size:${v}">${x}</span>`; }],
-    [/\[colou?r=(#[0-9a-f]{3,8}|[a-z]{3,20})\]([\s\S]*?)\[\/colou?r\]/gi, (m, c, x) => `<span style="color:${c}">${x}</span>`],
-    [/\[font=[^\]]*\]([\s\S]*?)\[\/font\]/gi, (m, x) => x],
-    [/\[(center|left|right|justify)\]([\s\S]*?)\[\/\1\]/gi, (m, a, x) => `<div style="text-align:${a.toLowerCase()}">${x}</div>`],
-    [/\[quote(?:=[^\]]*)?\]([\s\S]*?)\[\/quote\]/gi, (m, x) => `<blockquote>${x}</blockquote>`],
-    [/\[code\]([\s\S]*?)\[\/code\]/gi, (m, x) => `<pre><code>${x}</code></pre>`],
-    [/\[spoiler(?:=([^\]]*))?\]([\s\S]*?)\[\/spoiler\]/gi, (m, t, x) => `<details><summary>${t || 'Spoiler'}</summary>${x}</details>`],
-    [/\[heading\]([\s\S]*?)\[\/heading\]/gi, (m, x) => `<h3>${x}</h3>`],
-    [/\[youtube\]\s*([\w-]{6,20})\s*\[\/youtube\]/gi, (m, id) => `<a href="https://www.youtube.com/watch?v=${id}"><img src="https://img.youtube.com/vi/${id}/hqdefault.jpg" alt="YouTube video"></a>`],
-    [/\[list(=1|=a|=i)?\]([\s\S]*?)\[\/list\]/gi, (m, o, x) => {
-      const items = x.split(/\[\*\]/).slice(1).map(t => `<li>${t.trim().replace(/\n+$/, '')}</li>`).join('');
+    [/\[(b|i|u|s|sup|sub)\]((?:(?!\[\1\])[\s\S])*?)\[\/\1\]/gi, (m, t, x) => `<${t.toLowerCase()}>${x}</${t.toLowerCase()}>`],
+    [R('\\[strike\\]', 'strike', '\\[\\/strike\\]'), (m, x) => `<s>${x}</s>`],
+    [/\[img(?:=[^\]]*|\s+[^\]]*)?\]\s*([^[\]]*?)\s*\[\/img\]/gi, (m, u) => { const h = safeUrl(u); return h ? `<img src="${h}" alt="" loading="lazy">` : ''; }],
+    [R('\\[url=([^\\]]*?)\\]', 'url', '\\[\\/url\\]'), (m, u, x) => { const h = safeUrl(u); return h ? `<a href="${h}">${x || h}</a>` : x; }],
+    [/\[url\]\s*([^[\]]*?)\s*\[\/url\]/gi, (m, u) => { const h = safeUrl(u); return h ? `<a href="${h}">${u}</a>` : u; }],
+    [/\[email(?:=([^\]]*))?\]([^[\]]*?)\[\/email\]/gi, (m, a, x) => { const e = String(a || x).trim(); return /^[^\s@<>"&]+@[^\s@<>"&]+$/.test(e) ? `<a href="mailto:${e}">${x}</a>` : x; }],
+    [/\[youtube(?:=[^\]]*)?\]\s*([^[\]]*?)\s*\[\/youtube\]/gi, (m, v) => {
+      const id = youtubeId(v);
+      return id ? `<a class="bb-youtube" href="https://www.youtube.com/watch?v=${id}"><img src="https://img.youtube.com/vi/${id}/hqdefault.jpg" alt="YouTube video" loading="lazy"></a>` : '';
+    }],
+    [R('\\[size=(\\d+)(?:px|pt)?\\]', 'size', '\\[\\/size\\]'), (m, n, x) => {
+      const k = Number(n);
+      if (BB_SIZES[k]) return `<span class="bb-size-${k}" style="font-size:${BB_SIZES[k]}">${x}</span>`;
+      return `<span class="bb-size-px" style="font-size:${Math.max(8, Math.min(k, 40))}px">${x}</span>`;
+    }],
+    [R('\\[colou?r=([^\\]]{1,40})\\]', 'colou?r', '\\[\\/colou?r\\]'), (m, c, x) => {
+      c = c.trim();
+      return /^(#[0-9a-f]{3,8}|[a-z]{3,20}|rgba?\(\s*[\d.,\s%]+\))$/i.test(c) ? `<span class="bb-color" style="color:${c}">${x}</span>` : x;
+    }],
+    [R('\\[font=[^\\]]*\\]', 'font', '\\[\\/font\\]'), (m, x) => x],
+    [/\[(center|left|right|justify)\]((?:(?!\[\1\])[\s\S])*?)\[\/\1\]/gi, (m, a, x) => `<div class="bb-align-${a.toLowerCase()}" style="text-align:${a.toLowerCase()}">${x}</div>`],
+    [R('\\[indent\\]', 'indent', '\\[\\/indent\\]'), (m, x) => `<div class="bb-indent" style="margin-left:2em">${x}</div>`],
+    [R('\\[quote(?:=([^\\]]*))?\\]', 'quote', '\\[\\/quote\\]'), (m, who, x) => `<blockquote>${who ? `<cite>${who}</cite><br>` : ''}${x}</blockquote>`],
+    [R('\\[spoiler(?:=([^\\]]*))?\\]', 'spoiler', '\\[\\/spoiler\\]'), (m, t, x) => `<details class="bb-spoiler"><summary>${t || 'Spoiler'}</summary>${x}</details>`],
+    [R('\\[heading\\]', 'heading', '\\[\\/heading\\]'), (m, x) => `<h3>${x}</h3>`],
+    [R('\\[list(=[^\\]]*)?\\]', 'list', '\\[\\/list\\]'), (m, o, x) => {
+      const parts = x.replace(/\[\/\*\]/g, '').split(/\[\*\]/);
+      const lead = parts.shift().replace(/^\s+|\s+$/g, '');
+      const items = parts.map(t => `<li>${t.replace(/^\s+|\s+$/g, '')}</li>`).join('');
       const tag = o ? 'ol' : 'ul';
-      return `<${tag}>${items || x}</${tag}>`;
+      const type = o && /^=[aAiI]$/.test(o) ? ` type="${o[1]}"` : '';
+      return items ? `${lead ? lead + '\n' : ''}<${tag}${type}>${items}</${tag}>` : `<${tag}${type}><li>${lead}</li></${tag}>`;
     }],
   ];
-  for (let pass = 0; pass < 8; pass++) {
+  for (let pass = 0; pass < 16; pass++) {
     const before = s;
     for (const [re, fn] of rules) s = s.replace(re, fn);
     if (s === before) break;
   }
+  // Whatever is left is unbalanced author markup: bullets become text, other known tags vanish.
+  s = s.replace(/\[\/\*\]/g, '').replace(/\[\*\]\s*/g, '• ');
+  s = s.replace(new RegExp(`\\[\\/?(?:${BB_KNOWN})(?:=[^\\]\\n]*)?\\]`, 'gi'), '');
   s = s.replace(/\[(?:line|hr)\]/gi, '<hr>');
   s = s.replace(/\n/g, '<br>');
-  // Tidy breaks right after block elements.
-  s = s.replace(/(<\/(?:div|blockquote|pre|ul|ol|li|h3|details)>|<hr>)<br>/g, '$1');
+  // Tidy breaks around block elements.
+  s = s.replace(/(<\/(?:div|blockquote|pre|ul|ol|li|h3|details|summary)>|<hr>|<(?:ul|ol)[^>]*>)<br>/g, '$1');
+  s = s.replace(/<br>(<\/?(?:ul|ol|li)[^>]*>)/g, '$1');
+  s = s.replace(/^(?:\s|<br>)+|(?:\s|<br>)+$/g, '');
+  s = s.replace(/\u0001(\d+)\u0001/g, (m, i) => `<pre><code>${escapeHtml(codes[Number(i)])}</code></pre>`);
   return s;
 }
 
-// First image URLs found in markdown or html (skips badges).
-function extractImages(text, max = 8) {
+// Images that are buttons/badges/widgets, not pictures of the mod.
+const NOT_A_SHOT = /shields\.io|badgen\.net|\/badges?\/|badge\.svg|img\.youtube\.com|i\.ytimg\.com|ko-fi\.com\/img|cdn\.ko-fi\.com|storage\.ko-fi\.com\/cdn\/(?:kofi|brandasset)|buymeacoffee\.com\/(?:buttons|assets)|discordapp\.com\/api\/guilds|discord\.com\/api\/guilds|patreon\.com\/.*button|liberapay\.com\/assets|paypalobjects\.com|github\.com\/[^/]+\/[^/]+\/workflows|forthebadge\.com|visitor-badge|komarev\.com|avatars\d*\.githubusercontent\.com/i;
+
+// Every picture embedded in markdown or html (inline ![](), reference ![][id], <img src>), in order, deduplicated,
+// skipping badges/donate buttons/video thumbnails. Relative URLs are skipped.
+function extractImages(text, max = 200) {
+  const src = String(text || '');
+  const refs = {};
+  src.replace(/^\s{0,3}\[([^\]]+)\]:\s*<?(https?:\/\/[^\s>]+)>?/gim, (m, id, u) => { refs[id.toLowerCase()] = u; return m; });
   const out = [];
-  const re = /!\[[^\]]*\]\((https?:\/\/[^)\s]+)[^)]*\)|<img[^>]+src=["'](https?:\/\/[^"']+)["']/gi;
+  const re = /!\[([^\]]*)\]\(\s*<?(https?:\/\/[^)\s>]+)>?[^)]*\)|!\[([^\]]*)\]\[([^\]]*)\]|<img\b[^>]*?\bsrc\s*=\s*(?:"(https?:\/\/[^"]+)"|'(https?:\/\/[^']+)'|(https?:\/\/[^\s>]+))/gi;
   let m;
-  while ((m = re.exec(String(text || ''))) && out.length < max) {
-    const u = m[1] || m[2];
-    if (/shields\.io|badge|img\.youtube\.com/i.test(u)) continue;
-    if (!out.includes(u)) out.push(u);
+  while ((m = re.exec(src)) && out.length < max) {
+    let u = m[2] || m[5] || m[6] || m[7];
+    if (!u && m[0][0] === '!') u = refs[String(m[4] || m[3] || '').toLowerCase()];
+    if (!u) continue;
+    u = u.replace(/&amp;/g, '&');
+    if (NOT_A_SHOT.test(u)) continue;
+    out.push(u);
+  }
+  return uniqueUrls(out);
+}
+
+// Drop empties and duplicates (same URL ignoring http/https), keep the first occurrence's order.
+function uniqueUrls(list) {
+  const seen = new Set();
+  const out = [];
+  for (const u of list || []) {
+    if (!u || typeof u !== 'string' || !/^https?:\/\//i.test(u)) continue;
+    const k = u.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(u);
   }
   return out;
 }
 
-module.exports = { cleanName, gameSlug, iso, num, str, noKey, mapLimit, qs, escapeHtml, bbcodeToHtml, extractImages };
+// [{url, title, description}] -> same, without entries whose url uniqueUrls would drop.
+function uniqueGallery(list) {
+  const keep = new Set(uniqueUrls((list || []).map(g => g && g.url)));
+  const out = [];
+  for (const g of list || []) {
+    if (!g || !keep.has(g.url)) continue;
+    keep.delete(g.url);
+    out.push({ url: g.url, title: g.title || null, description: g.description || null });
+  }
+  return out;
+}
+
+module.exports = { cleanName, gameSlug, iso, num, str, noKey, mapLimit, qs, escapeHtml, bbcodeToHtml, extractImages, uniqueUrls, uniqueGallery, youtubeId };

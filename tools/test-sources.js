@@ -1,5 +1,5 @@
-// ModHaven — Copyright (c) 2026 CrpytTonic. All rights reserved.
 #!/usr/bin/env node
+// ModHaven — Copyright (c) 2026 CrpytTonic. All rights reserved.
 // Live smoke test for src/sources adapters.
 //   node tools/test-sources.js              -> call every keyless adapter against the live APIs
 //   node tools/test-sources.js --contract   -> same, plus strict type checks against src/sources/README.md
@@ -22,12 +22,13 @@ const ctx = {
   settings: {},
 };
 
+// details: extra getMod calls that print author/images/description (minShots = gallery size seen on the site).
 const PLAN = {
-  thunderstore: { game: 'lethal-company', query: 'more company' },
-  modrinth: { game: 'minecraft', query: 'sodium', gameVersion: '1.20.1' },
-  gamebanana: { game: '6460', query: 'helping hand' }, // Celeste
+  thunderstore: { game: 'lethal-company', query: 'more company', details: [{ game: 'lethal-company', id: 'notnotnotswipez-MoreCompany', minShots: 1 }] },
+  modrinth: { game: 'minecraft', query: 'sodium', gameVersion: '1.20.1', details: [{ game: 'minecraft', id: 'AANobbMI', minShots: 6, minCredits: 3 }, { game: 'minecraft', id: 'YL57xq9U', minShots: 3 }] },
+  gamebanana: { game: '6460', query: 'helping hand', details: [{ game: '6460', id: '150759', minShots: 32, minCredits: 3 }] }, // Celeste, D-Sides Pack
   curseforge: { game: '432', query: 'jei' }, // Minecraft
-  nexus: { game: 'skyrimspecialedition', query: 'skyui' },
+  nexus: { game: 'skyrimspecialedition', query: 'skyui', details: ['298', '542', '547', '450'].map(id => ({ game: 'runescapedragonwilds', id, minShots: 1 })) },
 };
 
 let failures = 0, warnings = 0;
@@ -62,8 +63,14 @@ const SCHEMA = {
     source: 'nestr', id: 'nestr', gameId: 'nestr', name: 'nestr', author: 'strN', summary: 'str', version: 'strN',
     updatedAt: 'isoN', createdAt: 'isoN', downloads: 'numN', likes: 'num', icon: 'urlN', url: 'url',
     categories: 'strArr', nsfw: 'bool', deprecated: 'bool', gameVersions: 'strArr',
+    authorUrl: v => v !== undefined && T.urlN(v), image: v => v !== undefined && T.urlN(v),
   },
-  detail: { description: 'str', descriptionFormat: v => ['html', 'markdown', 'text'].includes(v), screenshots: 'urlArr' },
+  detail: {
+    description: 'str', descriptionFormat: v => ['html', 'markdown', 'text'].includes(v), screenshots: 'urlArr',
+    credits: v => Array.isArray(v) && v.every(c => c && T.nestr(c.name) && T.nestr(c.role) && (c.url === undefined || T.urlN(c.url))),
+    gallery: v => Array.isArray(v) && v.every(g => g && T.url(g.url) && T.strN(g.title === undefined ? null : g.title)),
+    screenshotsComplete: T.opt('bool'), galleryUrl: T.opt('url'),
+  },
   version: {
     id: 'nestr', version: 'nestr', date: 'isoN', gameVersions: 'strArr', loaders: 'strArr', fileName: 'strN',
     size: 'numN', downloadUrl: 'urlN', changelog: 'strN', dependencies: 'arr',
@@ -120,6 +127,40 @@ function modSanity(mods, where) {
   if (noUpd) warn(`${where}: ${noUpd}/${mods.length} mods without updatedAt`);
 }
 
+// Every list row should credit the author and carry both images.
+function mediaSanity(mods, where) {
+  if (!mods.length) return;
+  for (const k of ['author', 'authorUrl', 'icon', 'image']) {
+    const n = mods.filter(m => !m[k]).length;
+    if (n) warn(`${where}: ${n}/${mods.length} mods without ${k}`);
+  }
+}
+
+// getMod on a known mod: print what the preview shows and check it against what the site page has.
+async function detailCheck(a, d) {
+  try {
+    const { r: m, ms } = await timed('getMod', () => a.getMod(ctx, d.game, d.id));
+    check('mod', m, `getMod(${d.id})`); check('detail', m, `getMod(${d.id})`);
+    ok(`getMod(${d.game}/${d.id}) "${m.name}" ${ms} ms`);
+    log(`       author=${m.author}  authorUrl=${m.authorUrl}`);
+    log(`       icon=${m.icon}`);
+    log(`       image=${m.image}`);
+    log(`       screenshots=${m.screenshots.length}${m.screenshotsComplete === false ? ` (partial, site gallery: ${m.galleryUrl})` : ''}  credits=${(m.credits || []).map(c => `${c.name} [${String(c.role).slice(0, 30)}]`).join(', ').slice(0, 200)}`);
+    log(`       ${m.descriptionFormat} description ${m.description.length} chars: ${JSON.stringify(m.description.slice(0, 200))}`);
+    if (!m.author) fail(`getMod(${d.id}): no author`);
+    if (!m.authorUrl) fail(`getMod(${d.id}): no authorUrl`);
+    if (!m.icon || !m.image) fail(`getMod(${d.id}): icon/image missing`);
+    if (!m.description || m.description.length < 100) fail(`getMod(${d.id}): description too short (${m.description.length})`);
+    if (d.minShots && m.screenshots.length < d.minShots) fail(`getMod(${d.id}): ${m.screenshots.length} screenshots, site shows ${d.minShots}`);
+    if (d.minCredits && (m.credits || []).length < d.minCredits) fail(`getMod(${d.id}): ${(m.credits || []).length} credits, want >= ${d.minCredits}`);
+    if (m.screenshots.some(u => /\/(?:220|100|530)-90_|_350\.webp|\/thumbnails\//.test(u))) fail(`getMod(${d.id}): thumbnail-size URL in screenshots`);
+    if (m.descriptionFormat === 'html' && a.id === 'nexus') {
+      const left = m.description.match(/\[\/?(?:b|i|u|url|img|size|colou?r|list|\*|center|spoiler|youtube|quote|font)(?:=[^\]]*)?\]/gi);
+      if (left) fail(`getMod(${d.id}): BBCode left in html: ${left.slice(0, 5).join(' ')}`);
+    }
+  } catch (e) { fail(`getMod(${d.game}/${d.id}) threw: ${e.code ? `[${e.code}] ` : ''}${e.message}`); }
+}
+
 // ---------------------------------------------------------------- full adapter run
 async function runFull(a, plan, { keyless }) {
   // listGames
@@ -150,6 +191,7 @@ async function runFull(a, plan, { keyless }) {
   checkAll('mod', pop.mods, 'listMods(popular).mods');
   if (pop.mods.some(m => m.source !== a.id)) fail('listMods: Mod.source != adapter id');
   modSanity(pop.mods, 'listMods(popular)');
+  mediaSanity(pop.mods, 'listMods(popular)');
 
   // page 2 differs
   try {
@@ -183,6 +225,7 @@ async function runFull(a, plan, { keyless }) {
   ok(`getMod(${target.id}) ${ms3} ms: ${short(mod, ['name', 'version', 'updatedAt', 'author', 'downloads', 'descriptionFormat'])}, description ${String(mod.description).length} chars, ${mod.screenshots.length} screenshots`);
   if (!mod.description) warn('getMod: empty description');
   log('       description starts: ' + JSON.stringify(String(mod.description).slice(0, 140)));
+  for (const d of plan.details || []) await detailCheck(a, d);
 
   const { r: vers, ms: ms4 } = await timed('getVersions', () => a.getVersions(ctx, plan.game, target.id));
   if (!Array.isArray(vers) || !vers.length) fail('getVersions returned nothing');
@@ -236,6 +279,12 @@ async function testAdapter(a) {
       await expectNoKey('getVersions', () => a.getVersions(ctx, plan.game, '238222'));
       await expectNoKey('resolveDownload', () => a.resolveDownload(ctx, plan.game, '238222', '1'));
       if (a.categories) await expectNoKey('categories', () => a.categories(ctx, plan.game));
+      // A key the site refuses must surface as BAD_KEY, not a raw HTTP error.
+      const saved = ctx.keys[a.id];
+      ctx.keys[a.id] = 'not-a-real-key-modhaven-test';
+      try { await a.getMod(ctx, plan.game, '238222'); fail('getMod with a bogus key succeeded'); }
+      catch (e) { if (e.code === 'BAD_KEY') ok('getMod with a bogus key -> BAD_KEY'); else fail(`getMod with a bogus key: expected BAD_KEY, got ${e.code || ''} ${e.status || ''} ${e.message}`); }
+      finally { ctx.keys[a.id] = saved; }
     }
   } catch (e) {
     fail(`${e.label || 'run'} threw: ${e.code ? `[${e.code}] ` : ''}${e.message}`);
@@ -256,6 +305,22 @@ function unitTests() {
   const html = util.bbcodeToHtml('[b]Bold[/b] <script>x</script>\n[url=https://a.b/c?d=1&e=2]l[/url][url=javascript:alert(1)]x[/url][list][*]a[*]b[/list][size=5][color=red]c[/color][/size][spoiler]s[/spoiler][youtube]dQw4w9WgXcQ[/youtube]');
   const bad = /<script|javascript:/i.test(html);
   if (!bad && html.includes('<b>Bold</b>') && html.includes('<li>a</li>') && html.includes('&lt;script&gt;')) ok('bbcodeToHtml: ' + html.slice(0, 120) + '…'); else fail('bbcodeToHtml: ' + html);
+  const bb = (src, ...want) => {
+    const h = util.bbcodeToHtml(src);
+    const miss = want.filter(w => (w instanceof RegExp ? !w.test(h) : !h.includes(w)));
+    if (miss.length || /\[\/?(?:b|list|\*|url|img|color|center)\b[^\]]*\]/i.test(h.replace(/<pre>[\s\S]*?<\/pre>/g, ''))) fail(`bbcode ${JSON.stringify(src).slice(0, 60)} -> ${h}`);
+    else ok(`bbcode ${JSON.stringify(src).slice(0, 50)} -> ${h.slice(0, 90)}`);
+  };
+  bb('[list]\n<br />[*]one[/*]\n<br />[*]two[list=1][*]n1[*]n2[/list][/list]', '<ul><li>one</li><li>two<ol><li>n1</li><li>n2</li></ol></li></ul>');
+  bb('[color=#fff]a[color=red]b[/color]c[/color]', '<span class="bb-color" style="color:#fff">a<span class="bb-color" style="color:red">b</span>c</span>');
+  bb('[b]open [center]never closed [/b]x [*]stray', '<b>open never closed </b>', '• stray');
+  bb('[youtube]https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=1[/youtube]', 'watch?v=dQw4w9WgXcQ"', 'img.youtube.com/vi/dQw4w9WgXcQ');
+  bb('[url=https://x.y/][img]https://x.y/a.png[/img][/url]', '<a href="https://x.y/"><img src="https://x.y/a.png"');
+  bb('[code][b]keep[/b] <x>[/code]', '<pre><code>[b]keep[/b] &lt;x&gt;</code></pre>');
+  bb('[size=5]big[/size][size=2]small[/size][spoiler=Title]hidden[/spoiler]', 'bb-size-5', 'bb-size-2', '<details class="bb-spoiler"><summary>Title</summary>hidden</details>');
+  bb('[img]javascript:alert(1)[/img][url=javascript:alert(1)]x[/url]', /^x$/);
+  const imgs = util.extractImages('![a](https://x/1.png "t") ![b][r] <img src=\'https://x/2.jpg\'> <img alt="" src="https://x/3.jpg?a=1&amp;b=2"> ![](https://img.shields.io/x) ![](https://x/1.png)\n[r]: https://x/4.gif');
+  if (JSON.stringify(imgs) === JSON.stringify(['https://x/1.png', 'https://x/4.gif', 'https://x/2.jpg', 'https://x/3.jpg?a=1&b=2'])) ok('extractImages: ' + imgs.length + ' images, badges/dupes skipped'); else fail('extractImages: ' + JSON.stringify(imgs));
   if (util.gameSlug("Baldur's Gate 3™") === 'baldurs-gate-3' && util.gameSlug('Pokémon Scarlet & Violet') === 'pokemon-scarlet-and-violet') ok('gameSlug'); else fail('gameSlug');
 }
 

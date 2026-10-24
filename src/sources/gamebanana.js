@@ -4,7 +4,7 @@
 //  mods:    Mod/Index?_aFilters[Generic_Game]=id&_sSort=...   (browse)
 //           Util/Search/Results?_sModelName=Mod&_idGameRow=id  (search, server caps results at ~100)
 //  details: Mod/{id}/ProfilePage (_sText html, _aFiles, _aPreviewMedia, _aRequirements)
-const { cleanName, gameSlug, iso, num, mapLimit, qs } = require('./_util');
+const { cleanName, gameSlug, iso, num, mapLimit, qs, uniqueGallery } = require('./_util');
 
 const API = 'https://gamebanana.com/apiv11';
 const WEB = 'https://gamebanana.com';
@@ -15,17 +15,41 @@ const SEARCH_ORDER = { popular: 'popularity', downloads: 'popularity', updated: 
 
 const isPlaceholder = u => !u || /\/_\.(gif|png)$/.test(u);
 
+// First preview image (the author's main picture). size: '100' | '220' | '530' | '800' | 'full'.
+// GameBanana only makes the 220/530/800 variants for some uploads; fall back to the next size that exists.
 function imageOf(media, size = '220') {
   const imgs = (media && media._aImages) || [];
   const ss = imgs.find(i => i._sType === 'screenshot') || imgs[0];
   if (!ss) return null;
   if (ss._sUrl) return isPlaceholder(ss._sUrl) ? null : ss._sUrl;
-  const f = ss[`_sFile${size}`] || ss._sFile100 || ss._sFile;
-  return ss._sBaseUrl && f ? `${ss._sBaseUrl}/${f}` : null;
+  const order = { 100: ['100', '220', 'full'], 220: ['220', '530', '100', 'full'], 530: ['530', '800', 'full'], 800: ['800', 'full'], full: ['full'] }[size] || ['full'];
+  for (const k of order) {
+    const f = k === 'full' ? ss._sFile : ss[`_sFile${k}`];
+    if (ss._sBaseUrl && f) return `${ss._sBaseUrl}/${f}`;
+  }
+  return null;
 }
 
-function screenshotsOf(media) {
-  return ((media && media._aImages) || []).filter(i => i._sBaseUrl && i._sFile).map(i => `${i._sBaseUrl}/${i._sFile}`);
+// Every preview image at full (original upload) size, in the author's order, with captions.
+function galleryOf(media) {
+  return uniqueGallery(((media && media._aImages) || [])
+    .map(i => ({ url: i._sBaseUrl && i._sFile ? `${i._sBaseUrl}/${i._sFile}` : (i._sUrl && !isPlaceholder(i._sUrl) ? i._sUrl : null), title: i._sCaption || null, description: null })));
+}
+
+// _aCredits: [{ _sGroupName, _aAuthors: [{ _sRole, _sName, _sProfileUrl?, _sUrl?, _sAvatarUrl? }] }]
+function creditsOf(p) {
+  const out = [];
+  for (const g of p._aCredits || []) {
+    for (const a of (g && g._aAuthors) || []) {
+      if (!a || !a._sName) continue;
+      const role = [g._sGroupName, a._sRole].filter(Boolean).join(': ') || 'Credit';
+      out.push({ name: a._sName, role, url: a._sProfileUrl || (/^https?:\/\//i.test(a._sUrl || '') ? a._sUrl : null), avatar: a._sAvatarUrl || null });
+    }
+  }
+  for (const st of p._aContributingStudios || []) if (st && st._sName) out.push({ name: st._sName, role: 'Studio', url: st._sProfileUrl || null, avatar: null });
+  const sub = p._aSubmitter;
+  if (sub && sub._sName && !out.some(c => c.name === sub._sName)) out.unshift({ name: sub._sName, role: 'Submitter', url: sub._sProfileUrl || null, avatar: sub._sAvatarUrl || null });
+  return out;
 }
 
 function fromRecord(r, gameId) {
@@ -36,6 +60,7 @@ function fromRecord(r, gameId) {
     gameId: String((r._aGame && r._aGame._idRow) || gameId),
     name: r._sName,
     author: (r._aSubmitter && r._aSubmitter._sName) || null,
+    authorUrl: (r._aSubmitter && (r._aSubmitter._sProfileUrl || (r._aSubmitter._idRow && `${WEB}/members/${r._aSubmitter._idRow}`))) || null,
     summary: r._sDescription || '',
     version: r._sVersion || null,
     updatedAt: iso(r._tsDateModified || r._tsDateUpdated || r._tsDateAdded),
@@ -44,6 +69,7 @@ function fromRecord(r, gameId) {
     likes: num(r._nLikeCount),
     views: num(r._nViewCount),
     icon: imageOf(r._aPreviewMedia, '220'),
+    image: imageOf(r._aPreviewMedia, '800'),
     url: r._sProfileUrl || `${WEB}/mods/${r._idRow}`,
     categories: [...new Set(cats)],
     nsfw: !!r._bHasContentRatings,
@@ -133,12 +159,16 @@ module.exports = {
     const p = await profile(ctx, modId);
     const mod = fromRecord(p, gameId);
     mod.icon = imageOf(p._aPreviewMedia, '220');
+    mod.image = imageOf(p._aPreviewMedia, 'full');
     mod.downloads = num(p._nDownloadCount);
+    const gallery = galleryOf(p._aPreviewMedia);
     return {
       ...mod,
       description: p._sText || p._sDescription || '',
       descriptionFormat: p._sText ? 'html' : 'text',
-      screenshots: screenshotsOf(p._aPreviewMedia),
+      screenshots: gallery.map(g => g.url),
+      gallery,
+      credits: creditsOf(p),
       requirements: (p._aRequirements || []).map(r => (Array.isArray(r) ? { name: r[0], url: r[1] || null } : r)),
     };
   },

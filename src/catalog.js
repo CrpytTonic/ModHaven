@@ -20,7 +20,8 @@ const CATALOG_TTL = 12 * 3600e3;
 const CATALOG_VER = 3; // bump when the saved game-list format changes
 
 // sources: adapter array; ctx factory gives each adapter its ctx.
-async function build(sources, ctxFor, { force = false } = {}) {
+// preferCache: use the saved list even when it is old (while a game runs: no big downloads).
+async function build(sources, ctxFor, { force = false, preferCache = false } = {}) {
   const file = store.root('cache', 'catalog.json');
   const cached = store.readJson(file, null);
   const settings = store.settings();
@@ -30,7 +31,7 @@ async function build(sources, ctxFor, { force = false } = {}) {
   const errors = {};
   const live = enabled.filter(s => s.noStore);
   const fetchLive = s => s.listGames(ctxFor(s)).then(l => { perSource[s.id] = l; }).catch(e => { errors[s.id] = e.message; store.log('listGames failed', s.id, e); });
-  if (cached && !force && Date.now() - cached.t < CATALOG_TTL && cached.enabledIds === enabledIds) {
+  if (cached && !force && (preferCache || Date.now() - cached.t < CATALOG_TTL) && cached.enabledIds === enabledIds) {
     perSource = { ...cached.perSource };
     await Promise.all(live.map(fetchLive));
   } else {

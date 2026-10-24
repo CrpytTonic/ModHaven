@@ -531,14 +531,18 @@ function adopt(game, profileName, picks) {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const backup = games.gdir(game.key, 'adopt-backup', stamp);
   const r = adoptRaw(game, profileName, picks.map(p => ({ ...p, from: root })), backup);
+  if (r.failed.length) store.log('adopt: some mods were left in place', r.failed);
   let deployed = null;
-  try { deployed = installer.deploy(game, games.profile(game.key, profileName)); } catch (e) { store.log('deploy after adopt', e); }
-  return { ...r, backup, deployed };
+  let deployError = null;
+  try { deployed = installer.deploy(game, games.profile(game.key, profileName)); } catch (e) { store.log('deploy after adopt', e); deployError = e.message; }
+  return { added: r.added, failed: r.failed, backup, deployed, deployError };
 }
 
 function adoptRaw(game, profileName, picks, backup) {
-  let profile = games.profile(game.key, profileName);
-  const added = [];
+  const profile = games.profile(game.key, profileName);
+  if (!profile) throw new Error(`Profile "${profileName}" not found`);
+  const added = [], failed = [], failedKeys = new Set();
+  try {
   for (const { cand, match: m, from } of picks) {
     const source = m ? m.source : 'local';
     const id = m ? String(m.modId) : store.safeName(cand.name).slice(0, 60);
@@ -557,22 +561,38 @@ function adoptRaw(game, profileName, picks, backup) {
     if (source === 'curseforge') require('./modmanager').stripStored(entry);
     const stage = installer.stageDir(game, entry);
     const fromBackup = from && from.startsWith(backup);
-    for (const f of cand.files) {
-      const src = path.join(from, f);
-      if (!exists(src)) continue;
-      const b = path.join(backup, f), s = path.join(stage, f);
-      fs.mkdirSync(path.dirname(s), { recursive: true });
-      if (fromBackup) { fs.copyFileSync(src, s); continue; }
-      fs.mkdirSync(path.dirname(b), { recursive: true });
-      fs.copyFileSync(src, b);
-      try { fs.renameSync(src, s); } catch { fs.copyFileSync(src, s); fs.rmSync(src, { force: true }); }
+    const moved = []; // [src, stage copy] — put back if this mod can't be taken over completely
+    try {
+      for (const f of cand.files) {
+        const src = path.join(from, f);
+        if (!exists(src)) continue;
+        const b = path.join(backup, f), s = path.join(stage, f);
+        fs.mkdirSync(path.dirname(s), { recursive: true });
+        if (fromBackup) { fs.copyFileSync(src, s); continue; }
+        fs.mkdirSync(path.dirname(b), { recursive: true });
+        fs.copyFileSync(src, b);
+        try { fs.renameSync(src, s); } catch { fs.copyFileSync(src, s); fs.rmSync(src, { force: true }); }
+        moved.push([src, s]);
+      }
+      fs.writeFileSync(path.join(stage, '.staged'), entry.installedAt);
+    } catch (e) {
+      // Leave the game folder as it was for this mod.
+      for (const [src, s] of moved.reverse()) {
+        try { if (!exists(src)) { fs.mkdirSync(path.dirname(src), { recursive: true }); try { fs.renameSync(s, src); } catch { fs.copyFileSync(s, src); } } } catch (e2) { store.log('adopt rollback', src, e2.message); }
+      }
+      try { fs.rmSync(path.join(stage, '.staged'), { force: true }); } catch { }
+      failed.push(`${entry.name}: ${e.message}`);
+      failedKeys.add(cand.key);
+      continue;
     }
-    fs.writeFileSync(path.join(stage, '.staged'), entry.installedAt);
     profile.mods.push(entry);
     added.push(entry.name);
   }
-  games.saveProfile(game.key, profile);
-  return { added };
+  } finally {
+    // Saved even if something above throws: files already moved into the store must stay known.
+    games.saveProfile(game.key, profile);
+  }
+  return { added, failed, failedKeys };
 }
 
 // picks: [{ cand, match }]. With replace on, matched mods are downloaded fresh from the site and the old
@@ -601,7 +621,7 @@ async function apply(game, profileName, picks, { replace = true, mm }) {
       }
       // Files sitting in the game folder.
       if (m && replace) {
-        moveOut(root, cand.files, path.join(backup, 'replaced'));
+        moveOut(root, cand.files, path.join(backup, 'replaced')); // all or nothing
         const r = await tryInstall(game, profileName, m, mm);
         if (r.ok) { out.replaced.push(m.name); continue; }
         // Couldn't download: put the user's files back as before, linked to the site mod.
@@ -615,10 +635,15 @@ async function apply(game, profileName, picks, { replace = true, mm }) {
   }
   if (keepRaw.length) {
     const r = adoptRaw(game, profileName, keepRaw, backup);
-    for (const k of keepRaw) (k.match ? out.linked : out.tracked).push(k.match ? k.match.name : k.cand.name);
-    void r;
+    for (const k of keepRaw) {
+      const name = k.match ? k.match.name : k.cand.name;
+      if (r.failedKeys.has(k.cand.key)) continue;
+      (k.match ? out.linked : out.tracked).push(name);
+    }
+    out.failed.push(...r.failed);
   }
-  try { out.deployed = installer.deploy(game, games.profile(game.key, profileName)); } catch (e) { store.log('deploy after apply', e); }
+  // The user's files are back in the game folder only after this deploy: say so if it fails.
+  try { out.deployed = installer.deploy(game, games.profile(game.key, profileName)); } catch (e) { store.log('deploy after apply', e); out.deployError = e.message; out.failed.push(`Putting the mods into the game folder failed: ${e.message}`); }
   return out;
 }
 
@@ -636,13 +661,21 @@ async function tryInstall(game, profileName, m, mm) {
 }
 
 // Moves files out of the game folder (to a backup) so a fresh copy can take their place.
+// All or nothing: if one file can't be moved, the ones already moved go back.
 function moveOut(root, files, to) {
-  for (const f of files) {
-    const s = path.join(root, f);
-    if (!exists(s)) continue;
-    const d = path.join(to, f);
-    fs.mkdirSync(path.dirname(d), { recursive: true });
-    try { fs.renameSync(s, d); } catch { fs.copyFileSync(s, d); fs.rmSync(s, { force: true }); }
+  const done = [];
+  try {
+    for (const f of files) {
+      const s = path.join(root, f);
+      if (!exists(s)) continue;
+      const d = path.join(to, f);
+      fs.mkdirSync(path.dirname(d), { recursive: true });
+      try { fs.renameSync(s, d); } catch { fs.copyFileSync(s, d); fs.rmSync(s, { force: true }); }
+      done.push([s, d]);
+    }
+  } catch (e) {
+    for (const [s, d] of done.reverse()) { try { if (!exists(s)) { fs.mkdirSync(path.dirname(s), { recursive: true }); fs.renameSync(d, s); } } catch (e2) { store.log('move back', s, e2.message); } }
+    throw new Error(`Couldn't move the old files out of the game folder: ${e.message}`);
   }
 }
 
