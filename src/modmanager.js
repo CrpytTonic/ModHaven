@@ -118,6 +118,21 @@ function refreshDeployed(key, profileName) {
   } catch (e) { store.log('redeploy after change failed', key, e.message); }
 }
 
+async function installFileFor(key, profileName, uid, filePath) {
+  const game = games.get(key);
+  const p = games.profile(key, profileName);
+  const e = p.mods.find(m => m.uid === uid);
+  if (!e) throw new Error('Mod not found in this profile');
+  const staged = await installer.stageFileFor(game, e, filePath);
+  Object.assign(e, { versionId: staged.versionId, fileName: staged.fileName, rawLayout: false, version: e.latest && e.latest.version ? e.latest.version + ' (file)' : 'downloaded file',
+    updatedLocallyAt: new Date().toISOString(), previousVersionId: e.versionId, modUpdatedAt: e.latest && e.latest.date ? e.latest.date : new Date().toISOString() });
+  if (e.latest) e.versionId = staged.versionId; // keep "up to date" honest: compare by date below
+  games.saveProfile(key, p);
+  refreshDeployed(key, profileName);
+  emit('profile', { key, profile: profileName });
+  return e;
+}
+
 async function installLocal(key, profileName, filePath) {
   const game = games.get(key);
   const mod = await installer.stageLocal(game, filePath);
@@ -175,10 +190,12 @@ async function checkUpdates(key, profileName, { autoInstall } = {}) {
       cur.lastChecked = new Date().toISOString();
       if (info) { cur.deprecated = !!info.deprecated; if (info.icon && !s.noStore) cur.icon = info.icon; }
       games.saveProfile(key, p);
-      if (v && String(v.id) !== String(m.versionId) && (!m.modUpdatedAt || !v.date || v.date >= m.modUpdatedAt)) {
+      const fromFile = String(m.versionId).startsWith('file-') && m.modUpdatedAt && v && v.date && v.date <= m.modUpdatedAt;
+      if (v && !fromFile && String(v.id) !== String(m.versionId) && (!m.modUpdatedAt || !v.date || v.date >= m.modUpdatedAt)) {
         const allow = m.autoUpdate === true || (m.autoUpdate !== false && auto && !m.pinned);
         if (allow) {
-          await install(key, profileName, { source: m.source, gameId: m.gameId, modId: m.id, versionId: v.id });
+          const res = await install(key, profileName, { source: m.source, gameId: m.gameId, modId: m.id, versionId: v.id });
+          if (!res.installed.length && res.manual.length) { available.push({ uid: m.uid, name: m.name, from: m.version, to: v.version, pageUrl: res.manual[0].pageUrl, manual: true }); return; }
           const p2 = games.profile(key, profileName); const c2 = p2.mods.find(x => x.uid === m.uid);
           if (c2) { c2.pinned = m.pinned; c2.latest = cur.latest; c2.autoUpdatedFrom = m.version; games.saveProfile(key, p2); }
           updated.push(`${m.name} ${m.version} → ${v.version}`);
@@ -203,4 +220,4 @@ async function checkAll() {
   return out;
 }
 
-module.exports = { stripStored, init, ctxFor, source, install, installLocal, uninstall, checkUpdates, checkAll, uidOf, pickVersion };
+module.exports = { installFileFor, stripStored, init, ctxFor, source, install, installLocal, uninstall, checkUpdates, checkAll, uidOf, pickVersion };

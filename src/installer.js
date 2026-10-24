@@ -116,7 +116,16 @@ function resolveLayout(game) {
   if (game.sources && game.sources.thunderstore) return 'bepinex';
   if (ip && fs.existsSync(path.join(ip, 'BepInEx'))) return 'bepinex';
   if (ip && fs.existsSync(path.join(ip, 'Data')) && fs.readdirSync(path.join(ip, 'Data')).some(f => /\.(esm|esp|esl)$/i.test(f))) return 'data';
+  if (ip && unrealProject(ip)) return 'unreal';
   return 'root';
+}
+
+// Unreal games keep their content in <installPath>/<Project>/Content/Paks.
+function unrealProject(ip) {
+  let ents = [];
+  try { ents = fs.readdirSync(ip, { withFileTypes: true }); } catch { return null; }
+  const d = ents.find(e => e.isDirectory() && !/^(Engine)$/i.test(e.name) && fs.existsSync(path.join(ip, e.name, 'Content', 'Paks')));
+  return d ? d.name : null;
 }
 
 // Where a game's mod files go. Returns absolute target root (game folder, or custom).
@@ -129,7 +138,7 @@ function targetRoot(game, layout) {
 const TOP_JUNK = /^(readme|changelog|license|credits)[^/]*$|^(icon\.png|manifest\.json)$/i;
 
 // Maps every staged file to its path relative to the target root.
-function mapFiles(stageDir, mod, layout) {
+function mapFiles(stageDir, mod, layout, game) {
   const files = walkFiles(stageDir).filter(f => f !== '.staged');
   // Adopted mods were found in the game folder: their files go back to exactly where they were.
   if (mod.rawLayout) return files.map(f => ({ src: path.join(stageDir, f), rel: f }));
@@ -140,7 +149,7 @@ function mapFiles(stageDir, mod, layout) {
   let strip = '';
   if (top.size === 1 && files.every(f => f.includes('/'))) {
     const only = [...top][0];
-    if (!/^(BepInEx|plugins|patchers|config|core|Data|Mods|Plugins|UserLibs|UserData|mods|Engine|Content)$/i.test(only)) strip = only + '/';
+    if (!/^(BepInEx|plugins|patchers|config|core|Data|Mods|Plugins|UserLibs|UserData|mods|Engine|Content|Paks|~mods|LogicMods|Binaries|Win64|ue4ss)$/i.test(only)) strip = only + '/';
   }
   const rest = f => (strip && f.startsWith(strip) ? f.slice(strip.length) : f);
   const fl = files.map(f => [f, rest(f)]);
@@ -190,6 +199,34 @@ function mapFiles(stageDir, mod, layout) {
     }
     return map;
   }
+  if (layout === 'unreal') {
+    const proj = (game && game.installPath && unrealProject(game.installPath)) || 'Game';
+    const bin = `${proj}/Binaries/Win64`;
+    const ue4ssDir = game && game.installPath && fs.existsSync(path.join(game.installPath, proj, 'Binaries', 'Win64', 'ue4ss')) ? `${bin}/ue4ss` : bin;
+    const folder = store.safeName(mod.name || mod.id).replace(/\s+/g, '');
+    const projRe = new RegExp('^' + proj.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '/', 'i');
+    // UE4SS script mods: a folder holding Scripts/main.lua, enabled.txt or dlls/main.dll
+    const luaRoots = new Set(fl.map(([, r]) => r).map(r => (r.match(/^(.*?)(?:^|\/)(?:Scripts\/main\.lua|enabled\.txt|dlls\/main\.dll)$/i) || [])[1]).filter(x => x !== undefined));
+    for (const [f, r] of fl) {
+      if (projRe.test(r) || /^(Engine)\//i.test(r)) { add(f, r); continue; }                          // already laid out from the game folder
+      if (/^(Content|Binaries)\//i.test(r)) { add(f, `${proj}/${r}`); continue; }
+      const lua = [...luaRoots].find(root => root === '' ? true : r.startsWith(root + '/'));
+      if (lua !== undefined) {
+        const rest = lua === '' ? r : r.slice(lua.length + 1);
+        const name = lua === '' ? folder : lua.split('/').pop();
+        add(f, `${ue4ssDir}/Mods/${/^Mods\//i.test(rest) ? rest.slice(5) : name + '/' + rest}`);
+        continue;
+      }
+      if (/(^|\/)(dwmapi\.dll|UE4SS\.dll|UE4SS-settings\.ini|xinput1_3\.dll)$/i.test(r) || /^ue4ss\//i.test(r)) { add(f, `${bin}/${r.replace(/^.*?(?=ue4ss\/|dwmapi|UE4SS|xinput)/i, '')}`); continue; }
+      if (/\.(pak|ucas|utoc|sig)$/i.test(r)) {
+        add(f, /LogicMods\//i.test(r) ? `${proj}/Content/Paks/LogicMods/${path.basename(r)}` : `${proj}/Content/Paks/~mods/${folder}/${path.basename(r)}`);
+        continue;
+      }
+      if (/\.(dll|asi)$/i.test(r)) { add(f, `${bin}/${path.basename(r)}`); continue; }
+      if (!TOP_JUNK.test(path.basename(r)) && !/\.(txt|md|png|jpe?g|url)$/i.test(r)) add(f, `${proj}/Content/Paks/~mods/${folder}/${r}`);
+    }
+    return map;
+  }
   if (layout === 'minecraft') {
     for (const [f, r] of fl) if (/\.jar$/i.test(r)) add(f, 'mods/' + path.basename(r));
     return map;
@@ -226,6 +263,15 @@ async function stageModNow(game, mod, dl, dir) {
 }
 
 // Local file the user dropped in.
+async function stageFileFor(game, entry, filePath) {
+  const st = fs.statSync(filePath);
+  const mod = { ...entry, versionId: 'file-' + Math.round(st.mtimeMs), fileName: path.basename(filePath) };
+  const dir = stageDir(game, mod);
+  await extract(filePath, dir);
+  fs.writeFileSync(path.join(dir, '.staged'), new Date().toISOString());
+  return mod;
+}
+
 async function stageLocal(game, filePath) {
   const base = path.basename(filePath).replace(/\.(zip|7z|rar|dll|jar|pak|esp|esm|esl)$/i, '');
   const st = fs.statSync(filePath);
@@ -257,7 +303,7 @@ function fileConflicts(game, profile) {
   for (const m of profile.mods.filter(x => x.enabled)) {
     const dir = stageDir(game, m);
     if (!fs.existsSync(dir)) continue;
-    for (const { rel } of mapFiles(dir, m, layout)) {
+    for (const { rel } of mapFiles(dir, m, layout, game)) {
       if (/^BepInEx\/config\//i.test(rel)) continue;
       const k = rel.toLowerCase();
       if (!owners.has(k)) owners.set(k, []);
@@ -298,12 +344,19 @@ function undeploy(game) {
       fs.mkdirSync(path.dirname(p), { recursive: true });
       fs.renameSync(bk, p);
     }
-    // Tidy empty folders we created.
-    let d = path.dirname(p);
-    while (d.length > root.length + 1) {
-      try { if (fs.readdirSync(d).length) break; fs.rmdirSync(d); } catch { break; }
-      d = path.dirname(d);
+    // Older deploys didn't record their folders: tidy empty ones, but never the game's own structure.
+    if (!dep.dirs) {
+      let d = path.dirname(p);
+      while (d.length > root.length + 1 && !KEEP_DIRS.test(path.basename(d))) {
+        try { if (fs.readdirSync(d).length) break; fs.rmdirSync(d); } catch { break; }
+        d = path.dirname(d);
+      }
     }
+  }
+  // Folders ModHaven created itself go away again once empty (deepest first).
+  for (const rel of (dep.dirs || []).slice().sort((a, b) => b.length - a.length)) {
+    const d = path.join(root, rel);
+    try { if (!fs.readdirSync(d).length) fs.rmdirSync(d); } catch { }
   }
   if (dep.layout === 'bepinex' && dep.profile) {
     const cfg = path.join(root, 'BepInEx', 'config');
@@ -313,7 +366,17 @@ function undeploy(game) {
   return { removed };
 }
 
-function linkOrCopy(src, dst, mode) {
+// Game folders that are never removed when tidying, even if a mod left them empty.
+const KEEP_DIRS = /^(Content|Paks|Binaries|Win64|Data|BepInEx|plugins|patchers|config|core|Mods|Plugins|UserData|UserLibs|MelonLoader|mods|~mods|LogicMods|SKSE|F4SE|scripts)$/i;
+
+function linkOrCopy(src, dst, mode, made) {
+  if (made) {
+    // Remember which folders we had to create, so undeploy only removes those.
+    let d = path.dirname(dst);
+    const missing = [];
+    while (!fs.existsSync(d)) { missing.push(d); const up = path.dirname(d); if (up === d) break; d = up; }
+    for (const m of missing) made.add(m);
+  }
   fs.mkdirSync(path.dirname(dst), { recursive: true });
   fs.rmSync(dst, { force: true });
   if (mode === 'hardlink' && !CONFIG_RE.test(dst)) {
@@ -324,12 +387,13 @@ function linkOrCopy(src, dst, mode) {
 
 function deploy(game, profile, { save = true } = {}) {
   if (!game.installPath && resolveLayout(game) !== 'minecraft') throw new Error('Set the game folder first (Game settings)');
+  const layout = resolveLayout(game); // before undeploy: removing mods must not change how the game looks
   undeploy(game);
-  const layout = resolveLayout(game);
   const root = targetRoot(game, layout);
   if (!root || !fs.existsSync(root)) throw new Error('Mod folder not found: ' + root);
   const mode = store.settings().deployMode;
   const files = {};
+  const made = new Set();
   const enabled = profile.mods.filter(m => m.enabled).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   const missing = [];
   // Configs saved from earlier runs of this profile go back first; mods' default configs don't overwrite them.
@@ -345,7 +409,7 @@ function deploy(game, profile, { save = true } = {}) {
     const dir = stageDir(game, m);
     if (!fs.existsSync(dir)) { missing.push(m.name); continue; }
     const owned = [];
-    for (const { src, rel } of mapFiles(dir, m, layout)) {
+    for (const { src, rel } of mapFiles(dir, m, layout, game)) {
       if (cfgRels.has(rel.toLowerCase())) continue;
       const dst = path.join(root, rel);
       if (!files[rel] && fs.existsSync(dst)) {
@@ -353,7 +417,7 @@ function deploy(game, profile, { save = true } = {}) {
         if (!fs.existsSync(bk)) { fs.mkdirSync(path.dirname(bk), { recursive: true }); fs.renameSync(dst, bk); }
         files[rel] = { uid: m.uid, backup: true };
       } else files[rel] = { uid: m.uid, backup: files[rel] ? files[rel].backup : false };
-      linkOrCopy(src, dst, mode);
+      linkOrCopy(src, dst, mode, made);
       owned.push(rel);
     }
     m.deployedFiles = owned.slice(0, 400);
@@ -361,11 +425,12 @@ function deploy(game, profile, { save = true } = {}) {
   if (layout === 'bepinex' && fs.existsSync(savedCfg)) {
     for (const rel of walkFiles(savedCfg)) {
       const r = 'BepInEx/config/' + rel;
-      linkOrCopy(path.join(savedCfg, rel), path.join(root, r), 'copy');
+      linkOrCopy(path.join(savedCfg, rel), path.join(root, r), 'copy', made);
       files[r] = { uid: 'profile-config', backup: false };
     }
   }
-  store.writeJson(deployFile(game), { profile: profile.name, layout, root, files, at: new Date().toISOString() });
+  const dirs = [...made].map(d => path.relative(root, d).replace(/\\/g, '/')).filter(d => d && !d.startsWith('..'));
+  store.writeJson(deployFile(game), { profile: profile.name, layout, root, files, dirs, at: new Date().toISOString() });
   if (save) games.saveProfile(game.key, profile);
   return { layout, root, count: Object.keys(files).length, missing };
 }
@@ -384,5 +449,5 @@ function ownerOf(game, fileName) {
   return null;
 }
 
-module.exports = { setEmitter, download, markDownload, clearDownloads, dlState, extract, stageMod, stageLocal, stageDir,
+module.exports = { stageFileFor, unrealProject, setEmitter, download, markDownload, clearDownloads, dlState, extract, stageMod, stageLocal, stageDir,
   pruneOldVersions, deploy, undeploy, deployedInfo, fileConflicts, resolveLayout, targetRoot, mapFiles, ownerOf, walkFiles, find7z };

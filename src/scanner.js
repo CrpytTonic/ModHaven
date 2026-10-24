@@ -110,7 +110,7 @@ function detect(game, layout) {
         if (!groups.has(b)) groups.set(b, []);
         groups.get(b).push(rel(root, f));
       }
-      for (const [b, files] of groups) add({ name: path.basename(b).replace(/_P$/i, ''), kind: 'pak', files, primary: files.find(f => /\.pak$/i.test(f)) });
+      for (const [b, files] of groups) add({ name: path.basename(b).replace(/_P$/i, ''), altName: path.basename(path.dirname(b)) !== sub ? path.basename(path.dirname(b)) : null, kind: 'pak', files, primary: files.find(f => /\.ucas$/i.test(f)) || files.find(f => /\.pak$/i.test(f)) });
     }
     const ue4ss = path.join(root, d, 'Binaries', 'Win64');
     for (const e of ls(path.join(ue4ss, 'Mods'))) {
@@ -245,10 +245,11 @@ function cfFingerprint(buf) {
 
 // Fills in name/version/hashes for each candidate (local only, no network).
 async function describe(root, cands) {
-  const dlls = cands.filter(c => /\.dll$/i.test(c.primary)).map(c => path.join(root, c.primary));
+  const base = c => c.root || root;
+  const dlls = cands.filter(c => /\.dll$/i.test(c.primary)).map(c => path.join(base(c), c.primary));
   const vi = await versionInfo(dlls);
   for (const c of cands) {
-    const p = path.join(root, c.primary);
+    const p = path.join(base(c), c.primary);
     let info = null;
     if (/\.jar$/i.test(p)) info = jarInfo(p);
     else if (/\.dll$/i.test(p) && c.kind !== 'loader') info = dllInfo(p);
@@ -276,6 +277,48 @@ async function describe(root, cands) {
     } catch { }
   }
   return cands.filter(c => !c.system);
+}
+
+// ---------- name similarity ----------
+// Mod files are often named "zNoCraftedPopup_P" while the site says "No Crafted Popup", or use short
+// forms ("NoCD" = "No Cooldowns"). Compare word sets instead of exact strings.
+const STOP = new Set(['mod', 'mods', 'the', 'a', 'an', 'for', 'of', 'and', 'to', 'by', 'with', 'v', 'ver', 'version', 'pak', 'p', 'ue4ss', 'edition', 'mp', 'sp']);
+const ABBR = { cd: 'cooldown', cds: 'cooldown', qol: 'quality life', hp: 'health', xp: 'experience', exp: 'experience', inv: 'inventory', dmg: 'damage', stam: 'stamina', dur: 'durability', lvl: 'level', lvls: 'level', npc: 'npc', npcs: 'npc' };
+function prettyName(n) {
+  return String(n || '').replace(/\.(dll|jar|pak|ucas|utoc|esp|esm|esl|asi|zip|7z|rar)$/i, '')
+    .replace(/^[z~_!0-9]+(?=[A-Z])/, '').replace(/_P$/i, '')
+    .replace(/[-_ ]v?\d+(\.\d+)+.*$/i, '')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .replace(/[_\-.+]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+function tokens(s, drop) {
+  const out = [];
+  for (let w of prettyName(s).toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').split(/\s+/)) {
+    if (!w) continue;
+    w = ABBR[w] || w;
+    for (let x of w.split(' ')) {
+      if (x.length > 3 && x.endsWith('s') && !x.endsWith('ss')) x = x.slice(0, -1);
+      // "crafted" / "crafting" / "craft" count as the same word
+      if (x.length > 5 && /(ing|ed)$/.test(x)) x = x.replace(/(ing|ed)$/, '');
+      if (!STOP.has(x) && !(drop && drop.has(x))) out.push(x);
+    }
+  }
+  return out;
+}
+// Words too common to make two mod names "similar" on their own ("No Scorch" vs "No Crafted Popup").
+const WEAK = new Set(['no', 'more', 'less', 'better', 'faster', 'slower', 'all', 'big', 'bigger', 'small', 'new', 'max', 'infinite', 'unlimited', 'easy', 'simple', 'custom', 'extra', 'super', 'fast', 'quick', 'improved', 'greater', 'remove', 'disable', 'enable', 'x2', 'x10', 'x100']);
+// 0..1: 1 = same name; Dice overlap of the word sets otherwise (needs at least one real shared word).
+function similarity(a, b, drop) {
+  if (normName(prettyName(a)) && normName(prettyName(a)) === normName(prettyName(b))) return 1;
+  const A = new Set(tokens(a, drop)), B = new Set(tokens(b, drop));
+  if (!A.size || !B.size) return 0;
+  let both = 0, strongShared = 0;
+  for (const x of A) if (B.has(x)) { both++; if (!WEAK.has(x)) strongShared++; }
+  if (!strongShared && [...A].join('') !== [...B].join('')) return 0;
+  let s = (2 * both) / (A.size + B.size);
+  // Joined-up spellings ("Spellwheel" vs "Spell Wheel")
+  if (s < 1 && [...A].join('') === [...B].join('')) s = 0.97;
+  return Math.round(s * 100) / 100;
 }
 
 // ---------- matching against the sites ----------
@@ -345,46 +388,93 @@ async function match(game, cands, mm, onProgress) {
       } catch { }
     });
   }
-  // 3) Search by name on every site that lists this game; accept only exact (normalised) names.
+  // 3) Search by name on every site that lists this game. Small catalogues (up to ~1500 mods) are
+  //    read whole once and compared locally, which also finds "zNoCraftedPopup" = "No Crafted Popup".
   const order = [...(PREFERRED[installer.resolveLayout(game)] || []), ...srcIds].filter((x, i, a) => srcIds.includes(x) && a.indexOf(x) === i);
-  const toSearch = cands.filter(c => !results.get(c.key).some(m => m.how !== 'name'));
+  const toSearch = cands.filter(c => !results.get(c.key).some(m => m.how !== 'name' && m.how !== 'similar'));
   const capped = toSearch.slice(0, 200);
-  await limit(capped, 4, async c => {
-    const keys = nameKeys(c);
-    const queries = [...new Set([c.name, cleanFileName(path.basename(c.primary)), ...(c.searchNames || []), c.altName].filter(q => q && q.length >= 3))].slice(0, 3);
-    for (const id of order) {
-      const s = mm.source(id);
-      if (!s || (s.needsKey && !s.keylessBrowse && !settings.keys[id])) continue;
-      let hit = null;
-      for (const q of queries) {
-        try {
-          const r = await s.listMods(ctxFor(s), game.sources[id], { query: q, sort: 'popular', page: 0, pageSize: 15 });
-          hit = (r.mods || []).find(m => keys.includes(normName(m.name)) || keys.includes(normName(String(m.id).split('-').slice(1).join('-'))) || (c.searchNames && c.searchNames.some(n => normName(m.name).startsWith(normName(n)))));
-        } catch { }
-        if (hit) break;
-      }
-      if (hit) put(c, { source: id, gameId: game.sources[id], modId: String(hit.id), versionId: null, version: null, how: 'name', info: hit });
-    }
+  const finder = siteFinder(game, mm, order);
+  await limit(capped, 3, async c => {
+    for (const m of await finder.find(candidateNames(c), c.name)) put(c, m);
     done++; tick(c.name);
   });
   done = cands.length; tick('');
 
   // Fill in display info + newest version for every match.
   const all = [];
-  for (const c of cands) {
-    const ms = results.get(c.key);
-    for (const m of ms) all.push([c, m]);
-  }
-  await limit(all, 4, async ([c, m]) => {
+  for (const c of cands) for (const m of results.get(c.key)) all.push([c, m]);
+  await fillMatches(game, all, mm);
+  const rank = rankMatch(order);
+  const searched = new Set(capped.map(c => c.key));
+  if (toSearch.length > capped.length) store.log(`external scan: name search capped at ${capped.length} of ${toSearch.length}`);
+  return cands.map(c => {
+    const ms = results.get(c.key).filter(m => m.name).sort((a, b) => rank(a) - rank(b));
+    return { ...c, matches: ms, best: ms[0] || null, notSearched: toSearch.includes(c) && !searched.has(c.key) };
+  });
+}
+
+const candidateNames = c => [...new Set([c.name, c.altName, prettyName(path.basename(c.primary || '')), c.modid, ...(c.searchNames || [])].filter(x => x && String(x).length >= 3))];
+
+// Finds likely site mods for a list of names. Returns scored matches (best first, max 3 per site).
+function siteFinder(game, mm, order) {
+  const settings = store.settings();
+  const drop = new Set(tokens(game.name));
+  const pools = new Map();
+  const pool = id => {
+    if (!pools.has(id)) pools.set(id, (async () => {
+      const s = mm.source(id);
+      try {
+        const first = await s.listMods(mm.ctxFor(s), game.sources[id], { query: '', sort: 'popular', page: 0, pageSize: 50 });
+        if (first.total != null && first.total > 1500) return null;
+        const all = [...(first.mods || [])];
+        let more = first.hasMore, page = 1;
+        while (more && page < 40) {
+          const r = await s.listMods(mm.ctxFor(s), game.sources[id], { query: '', sort: 'popular', page, pageSize: 50 });
+          all.push(...(r.mods || [])); more = r.hasMore; page++;
+        }
+        return more ? null : all; // only use a complete list
+      } catch { return null; }
+    })());
+    return pools.get(id);
+  };
+  return {
+    async find(names, label) {
+      const out = [];
+      const queries = [...new Set(names.map(prettyName).filter(q => q.length >= 3))].slice(0, 2);
+      for (const id of order) {
+        const s = mm.source(id);
+        if (!s || !game.sources[id] || (s.needsKey && !s.keylessBrowse && !settings.keys[id])) continue;
+        const seen = new Map();
+        const consider = list => { for (const m of list || []) if (!seen.has(String(m.id))) seen.set(String(m.id), m); };
+        consider(await pool(id));
+        for (const q of queries) {
+          try { consider((await s.listMods(mm.ctxFor(s), game.sources[id], { query: q, sort: 'popular', page: 0, pageSize: 20 })).mods); } catch { }
+        }
+        const scored = [...seen.values()].map(m => {
+          const tail = id === 'thunderstore' ? String(m.id).split('-').slice(1).join('-') : '';
+          const score = Math.max(...names.map(n => Math.max(similarity(n, m.name, drop), tail ? similarity(n, tail, drop) : 0)));
+          return { m, score };
+        }).filter(x => x.score >= 0.5).sort((x, y) => y.score - x.score).slice(0, 3);
+        for (const { m, score } of scored) {
+          out.push({ source: id, gameId: game.sources[id], modId: String(m.id), versionId: null, version: null, how: score >= 0.97 ? 'name' : 'similar', score, info: m });
+        }
+      }
+      return out;
+    },
+  };
+}
+
+// Display info + newest version + (if possible) the installed version for each match.
+async function fillMatches(game, pairs, mm) {
+  await limit(pairs, 4, async ([c, m]) => {
     const s = mm.source(m.source);
     try {
-      const info = m.info && m.info.url ? m.info : await s.getMod(ctxFor(s), m.gameId, m.modId);
+      const info = m.info && m.info.url ? m.info : await s.getMod(mm.ctxFor(s), m.gameId, m.modId);
       m.name = info.name; m.author = info.author; m.icon = info.icon; m.url = info.url; m.summary = info.summary; m.updatedAt = info.updatedAt;
-      const vs = await s.getVersions(ctxFor(s), m.gameId, m.modId).catch(() => []);
+      const vs = await s.getVersions(mm.ctxFor(s), m.gameId, m.modId).catch(() => []);
       const latest = mm.pickVersion(vs, game, null);
       m.latest = latest ? { versionId: String(latest.id), version: latest.version, date: latest.date } : null;
-      // Name/manifest matches: find the installed version on the site by its version number.
-      if (!m.versionId && c.version) {
+      if (!m.versionId && c && c.version) {
         // Same version written differently: "v1.2.0" = "1.2", "1.2+build.5", Thunderstore's BepInEx "5.4.21" = "5.4.2100".
         const norm = x => String(x || '').trim().replace(/^v/i, '').replace(/(\.0)+$/, '');
         const want = norm(c.version);
@@ -397,13 +487,20 @@ async function match(game, cands, mm, onProgress) {
       delete m.info;
     } catch (e) { m.error = e.message; delete m.info; }
   });
-  const rank = m => (m.how === 'exact file' ? 0 : m.how === 'package manifest' ? 1 : m.how === 'package folder' ? 2 : 3) * 10 + order.indexOf(m.source);
-  const searched = new Set(capped.map(c => c.key));
-  if (toSearch.length > capped.length) store.log(`external scan: name search capped at ${capped.length} of ${toSearch.length}`);
-  return cands.map(c => {
-    const ms = results.get(c.key).filter(m => m.name).sort((a, b) => rank(a) - rank(b));
-    return { ...c, matches: ms, best: ms[0] || null, notSearched: toSearch.includes(c) && !searched.has(c.key) };
-  });
+}
+
+const HOW_RANK = { 'exact file': 0, 'package manifest': 1, 'package folder': 2, name: 3, similar: 4 };
+const rankMatch = order => m => (HOW_RANK[m.how] ?? 5) * 1000 - Math.round((m.score || 1) * 100) * 10 + Math.max(0, order.indexOf(m.source));
+
+// "Search" button in the review window: look up any name on every site for this game.
+async function searchSites(game, query, mm) {
+  const settings = store.settings();
+  const srcIds = Object.keys(game.sources || {}).filter(id => settings.sources[id] !== false);
+  const order = [...(PREFERRED[installer.resolveLayout(game)] || []), ...srcIds].filter((x, i, a) => srcIds.includes(x) && a.indexOf(x) === i);
+  const found = await siteFinder(game, mm, order).find([query], query);
+  // A typed search should show near misses too.
+  await fillMatches(game, found.map(m => [null, m]), mm);
+  return found.filter(m => m.name).sort((a, b) => rankMatch(order)(a) - rankMatch(order)(b));
 }
 
 async function limit(items, n, fn) {
@@ -419,9 +516,16 @@ function adopt(game, profileName, picks) {
   const root = installer.targetRoot(game, layout);
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const backup = games.gdir(game.key, 'adopt-backup', stamp);
+  const r = adoptRaw(game, profileName, picks.map(p => ({ ...p, from: root })), backup);
+  let deployed = null;
+  try { deployed = installer.deploy(game, games.profile(game.key, profileName)); } catch (e) { store.log('deploy after adopt', e); }
+  return { ...r, backup, deployed };
+}
+
+function adoptRaw(game, profileName, picks, backup) {
   let profile = games.profile(game.key, profileName);
   const added = [];
-  for (const { cand, match: m } of picks) {
+  for (const { cand, match: m, from } of picks) {
     const source = m ? m.source : 'local';
     const id = m ? String(m.modId) : store.safeName(cand.name).slice(0, 60);
     const versionId = m && m.versionId ? String(m.versionId) : 'adopted-' + (cand.sha1 || crypto.randomBytes(4).toString('hex')).slice(0, 10);
@@ -437,12 +541,14 @@ function adopt(game, profileName, picks) {
     };
     if (source === 'curseforge') require('./modmanager').stripStored(entry);
     const stage = installer.stageDir(game, entry);
+    const fromBackup = from && from.startsWith(backup);
     for (const f of cand.files) {
-      const src = path.join(root, f);
+      const src = path.join(from, f);
       if (!exists(src)) continue;
       const b = path.join(backup, f), s = path.join(stage, f);
-      fs.mkdirSync(path.dirname(b), { recursive: true });
       fs.mkdirSync(path.dirname(s), { recursive: true });
+      if (fromBackup) { fs.copyFileSync(src, s); continue; }
+      fs.mkdirSync(path.dirname(b), { recursive: true });
       fs.copyFileSync(src, b);
       try { fs.renameSync(src, s); } catch { fs.copyFileSync(src, s); fs.rmSync(src, { force: true }); }
     }
@@ -451,10 +557,96 @@ function adopt(game, profileName, picks) {
     added.push(entry.name);
   }
   games.saveProfile(game.key, profile);
-  // Put them back into the game straight away (as links/copies ModHaven now tracks).
-  let deployed = null;
-  try { deployed = installer.deploy(game, games.profile(game.key, profileName)); } catch (e) { store.log('deploy after adopt', e); }
-  return { added, backup, deployed };
+  return { added };
+}
+
+// picks: [{ cand, match }]. With replace on, matched mods are downloaded fresh from the site and the old
+// files are removed (backed up first). When a site needs a manual click (Nexus free accounts), the old
+// files stay in place, linked to the site mod, until that download arrives.
+async function apply(game, profileName, picks, { replace = true, mm }) {
+  const layout = installer.resolveLayout(game);
+  const root = installer.targetRoot(game, layout);
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const backup = games.gdir(game.key, 'adopt-backup', stamp);
+  const out = { replaced: [], linked: [], tracked: [], manual: [], failed: [], backup };
+  const keepRaw = [];
+  for (const { cand, match: m } of picks) {
+    try {
+      if (cand.profileUid) {
+        if (!m) continue;
+        if (replace) {
+          const r = await tryInstall(game, profileName, m, mm);
+          if (r.ok) { mm.uninstall(game.key, profileName, cand.profileUid, { withDeps: false }); out.replaced.push(m.name); continue; }
+          if (r.manual) out.manual.push({ name: m.name, pageUrl: r.manual.pageUrl || m.url, reason: r.manual.reason });
+          else if (r.error) out.failed.push(`${m.name}: ${r.error}`);
+        }
+        linkEntry(game, profileName, cand.profileUid, m);
+        out.linked.push(m.name);
+        continue;
+      }
+      // Files sitting in the game folder.
+      if (m && replace) {
+        moveOut(root, cand.files, path.join(backup, 'replaced'));
+        const r = await tryInstall(game, profileName, m, mm);
+        if (r.ok) { out.replaced.push(m.name); continue; }
+        // Couldn't download: put the user's files back as before, linked to the site mod.
+        if (r.manual) out.manual.push({ name: m.name, pageUrl: r.manual.pageUrl || m.url, reason: r.manual.reason });
+        else if (r.error) out.failed.push(`${m.name}: ${r.error}`);
+        keepRaw.push({ cand, match: m, from: path.join(backup, 'replaced') });
+        continue;
+      }
+      keepRaw.push({ cand, match: m, from: root });
+    } catch (e) { out.failed.push(`${(m && m.name) || cand.name}: ${e.message}`); }
+  }
+  if (keepRaw.length) {
+    const r = adoptRaw(game, profileName, keepRaw, backup);
+    for (const k of keepRaw) (k.match ? out.linked : out.tracked).push(k.match ? k.match.name : k.cand.name);
+    void r;
+  }
+  try { out.deployed = installer.deploy(game, games.profile(game.key, profileName)); } catch (e) { store.log('deploy after apply', e); }
+  return out;
+}
+
+async function tryInstall(game, profileName, m, mm) {
+  try {
+    const r = await mm.install(game.key, profileName, { source: m.source, gameId: m.gameId, modId: m.modId });
+    const mine = r.manual.find(x => x.uid === `${m.source}:${m.modId}`);
+    if (r.installed.length && !mine) return { ok: true };
+    if (r.skipped.length && !mine) return { ok: true };
+    return { manual: mine || r.manual[0] || { pageUrl: m.url } };
+  } catch (e) {
+    if (e.code === 'NO_KEY' || e.code === 'BAD_KEY') return { manual: { pageUrl: m.url, reason: e.message } };
+    return { error: e.message };
+  }
+}
+
+// Moves files out of the game folder (to a backup) so a fresh copy can take their place.
+function moveOut(root, files, to) {
+  for (const f of files) {
+    const s = path.join(root, f);
+    if (!exists(s)) continue;
+    const d = path.join(to, f);
+    fs.mkdirSync(path.dirname(d), { recursive: true });
+    try { fs.renameSync(s, d); } catch { fs.copyFileSync(s, d); fs.rmSync(s, { force: true }); }
+  }
+}
+
+// Turns an unlinked "local" entry into one linked to a site mod (files unchanged, so updates are found).
+function linkEntry(game, profileName, uid, m) {
+  const p = games.profile(game.key, profileName);
+  const e = p.mods.find(x => x.uid === uid);
+  if (!e) return;
+  const newUid = `${m.source}:${m.modId}`;
+  if (p.mods.some(x => x.uid === newUid)) return;
+  const oldDir = installer.stageDir(game, e);
+  Object.assign(e, { uid: newUid, source: m.source, id: String(m.modId), gameId: String(m.gameId), name: m.name, author: m.author || e.author, icon: m.icon || null, url: m.url || null,
+    summary: m.summary || e.summary, version: m.version || e.version, versionId: m.versionId ? String(m.versionId) : e.versionId, modUpdatedAt: m.versionDate || null,
+    pinned: false, latest: m.latest || null, adopted: { ...(e.adopted || {}), how: m.how, linkedAt: new Date().toISOString() } });
+  if (m.source === 'curseforge') require('./modmanager').stripStored(e);
+  const newDir = installer.stageDir(game, e);
+  if (oldDir !== newDir && exists(oldDir)) { fs.mkdirSync(path.dirname(newDir), { recursive: true }); try { fs.renameSync(oldDir, newDir); } catch { installer.walkFiles && games.copyDir(oldDir, newDir); } }
+  for (const x of p.mods) if (x.dependencyOf) x.dependencyOf = x.dependencyOf.map(u => (u === uid ? newUid : u));
+  games.saveProfile(game.key, p);
 }
 
 // Remembers "not a mod / leave it alone" choices.
@@ -465,15 +657,30 @@ function ignore(game, keys) {
   return g.externalIgnored;
 }
 
-async function scan(game, { mm, deep = false, onProgress } = {}) {
+// Profile entries that came from a file / the game folder and aren't linked to any site yet.
+function unlinked(game, profileName) {
+  const p = profileName && games.profile(game.key, profileName);
+  if (!p) return [];
+  return p.mods.filter(m => m.source === 'local').map(m => {
+    const dir = installer.stageDir(game, m);
+    let files = [];
+    try { files = installer.walkFiles(dir).filter(f => f !== '.staged'); } catch { }
+    if (!files.length) return null;
+    return { key: 'profile:' + m.uid, profileUid: m.uid, name: m.name, version: null, kind: 'managed', root: dir, files, primary: pickPrimary(dir, files) };
+  }).filter(Boolean);
+}
+
+async function scan(game, { mm, deep = false, onProgress, profile } = {}) {
   const layout = installer.resolveLayout(game);
   const { root, candidates } = detect(game, layout);
   const ignored = new Set(game.externalIgnored || []);
   const fresh = candidates.filter(c => !ignored.has(c.key));
-  if (!deep) return { root, layout, count: fresh.length, names: fresh.slice(0, 8).map(c => c.name), ignored: candidates.length - fresh.length };
-  const described = await describe(root, fresh);
+  const mine = unlinked(game, profile).filter(c => !ignored.has(c.key));
+  const all = [...fresh, ...mine];
+  if (!deep) return { root, layout, count: all.length, found: fresh.length, unlinked: mine.length, names: all.slice(0, 8).map(c => c.name), ignored: candidates.length - fresh.length };
+  const described = await describe(root, all);
   const matched = await match(game, described, mm, onProgress);
   return { root, layout, count: matched.length, items: matched, ignored: candidates.length - fresh.length };
 }
 
-module.exports = { scan, adopt, ignore, detect, describe, match, cfFingerprint, dllInfo, jarInfo };
+module.exports = { scan, adopt, apply, searchSites, similarity, prettyName, ignore, detect, describe, match, cfFingerprint, dllInfo, jarInfo };

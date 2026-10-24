@@ -670,7 +670,7 @@ function renderBanners() {
   const ext = S.external && S.external.key === g.key ? S.external : null;
   if (ext && ext.count && !ext.dismissed) {
     const one = ext.count === 1;
-    out.push(`<div class="banner info">${I.search.replace('<svg', '<svg width="20" height="20" style="fill:none;stroke:currentColor;stroke-width:2"')}<div class="grow"><b>Found ${ext.count} mod${one ? '' : 's'} you installed yourself</b> (${ext.names.slice(0, 4).map(esc).join(', ')}${ext.count > 4 ? '…' : ''}). Add ${one ? 'it' : 'them'} to ModHaven so ${one ? 'it gets' : 'they get'} updated automatically.</div><button class="btn sm primary" id="bExt">Review</button><button class="btn sm ghost" id="bExtNo">Not now</button></div>`);
+    out.push(`<div class="banner info">${I.search.replace('<svg', '<svg width="20" height="20" style="fill:none;stroke:currentColor;stroke-width:2"')}<div class="grow"><b>${ext.found && ext.unlinked ? `Found ${ext.found} mod${ext.found === 1 ? '' : 's'} you installed yourself and ${ext.unlinked} not linked to a mod site` : ext.unlinked ? `${ext.unlinked} mod${ext.unlinked === 1 ? ' isn’t' : 's aren’t'} linked to a mod site yet` : `Found ${ext.count} mod${one ? '' : 's'} you installed yourself`}</b> (${ext.names.slice(0, 4).map(esc).join(', ')}${ext.count > 4 ? '…' : ''}). Find ${one ? 'it' : 'them'} on the mod sites so ModHaven can keep ${one ? 'it' : 'them'} updated.</div><button class="btn sm primary" id="bExt">Review</button><button class="btn sm ghost" id="bExtNo">Not now</button></div>`);
   }
   el.innerHTML = out.join('');
   if ($('#bExt')) $('#bExt').onclick = reviewExternal;
@@ -917,6 +917,7 @@ async function renderInstalledDetail(uid) {
       <div class="dactions">
         ${hasUpdate(m) ? `<button class="btn primary" data-a="update">${I.up}Update to ${esc(m.latest.version)}</button>` : ''}
         ${m.source !== 'local' ? `<button class="btn" data-a="versions">${I.down}Change version</button>` : ''}
+        ${m.source !== 'local' ? `<button class="btn" data-a="usefile" data-tip="Downloaded this mod from its website yourself? Pick the file and ModHaven installs it in place of the old one, keeping the link for updates.">${I.file}Use a file I downloaded</button>` : `<button class="btn" data-a="relink">${I.search}Find on mod sites</button>`}
         ${m.url ? `<button class="btn" data-a="web">${I.ext}Website</button>` : ''}
         <button class="btn" data-a="folder">${I.folder}Files</button>
         <button class="btn danger" data-a="remove">${I.trash}Uninstall</button>
@@ -943,6 +944,15 @@ async function renderInstalledDetail(uid) {
     try {
       if (a.dataset.a === 'update') await doInstall({ source: m.source, gameId: m.gameId, modId: m.id, versionId: m.latest.versionId }, `${m.name} ${m.latest.version}`);
       if (a.dataset.a === 'versions') versionPicker(m);
+      if (a.dataset.a === 'relink') reviewExternal({ only: 'profile:' + m.uid });
+      if (a.dataset.a === 'usefile') {
+        const file = await call('dialog:pick', { kind: 'file', title: `File for ${m.name}`, filters: [{ name: 'Mod files', extensions: ['zip', '7z', 'rar', 'pak', 'dll', 'jar', 'esp', 'esm', 'esl'] }, { name: 'All files', extensions: ['*'] }] });
+        if (!file) return;
+        S.profile = await call('profiles:get', { key: S.game.key, name: S.profileName });
+        await call('mods:installFileFor', { key: S.game.key, profile: S.profileName, uid, path: file });
+        toast(`Installed your file as <b>${esc(m.name)}</b>, replacing the old files. It stays linked to its page for updates.`, 'ok', 8000);
+        await reloadProfile();
+      }
       if (a.dataset.a === 'web') call('shell:url', m.url);
       if (a.dataset.a === 'folder') call('mods:openFolder', { key: S.game.key, profile: S.profileName, uid });
       if (a.dataset.a === 'unpin') { S.profile = await call('mods:patch', { key: S.game.key, profile: S.profileName, uid, patch: { pinned: false } }); renderInstalledDetail(uid); }
@@ -1268,117 +1278,177 @@ async function quickExternal() {
   const g = S.game;
   if (!g || (!g.installPath && g.key !== 'minecraft')) return;
   try {
-    const r = await call('external:quick', g.key);
+    const r = await call('external:quick', { key: g.key, profile: S.profileName });
     if (!S.game || S.game.key !== g.key) return;
     const was = S.external && S.external.key === g.key ? S.external : null;
-    S.external = { key: g.key, count: r.count, names: r.names, dismissed: !!(was && was.dismissed) };
+    S.external = { key: g.key, count: r.count, found: r.found, unlinked: r.unlinked, names: r.names, dismissed: !!(was && was.dismissed) };
     renderBanners();
   } catch { }
 }
 
 function adoptedNote(m) {
-  const why = m.source === 'local' ? "It isn't on a mod site, so it won't be updated."
+  const why = m.source === 'local' ? `It isn't linked to a mod site yet, so it can't be updated. <a href="#" data-relink="${attr(m.uid)}">Find it on the mod sites</a>`
     : String(m.versionId).startsWith('adopted-') ? "Its exact version wasn't listed on the site, so the next update installs the newest version." : '';
-  return `<div class="banner info" style="margin:0"><div class="grow">You installed this yourself; ModHaven took it over ${esc(ago(m.adopted.at))} (${esc(m.adopted.how)}). ${why}</div></div>`;
+  return `<div class="banner info" style="margin:0"><div class="grow">You installed this yourself; ModHaven took it over ${esc(ago(m.adopted.at))}${m.adopted.how && m.adopted.how !== 'not matched' ? ` (${esc(m.adopted.how)})` : ''}. ${why}</div></div>`;
 }
+document.addEventListener('click', e => {
+  const a = e.target.closest('[data-relink]');
+  if (a) { e.preventDefault(); reviewExternal({ only: 'profile:' + a.dataset.relink }); }
+});
 
-const HOW_LABEL = { 'exact file': ['Exact file match', 'ok'], 'package manifest': ['Package manifest', 'ok'], 'package folder': ['Package folder', 'ok'], name: ['Name match', 'warn'] };
+const HOW_LABEL = { 'exact file': ['Exact file match', 'ok'], 'package manifest': ['Package manifest', 'ok'], 'package folder': ['Package folder', 'ok'], name: ['Same name', 'ok'], similar: ['Similar name', 'warn'] };
+const howText = mt => {
+  if (mt.how === 'similar') return [`${Math.round((mt.score || 0) * 100)}% similar name`, 'warn'];
+  if (mt.how === 'name' && mt.versionId) return ['Same name + version', 'ok'];
+  return HOW_LABEL[mt.how] || [mt.how, 'info'];
+};
+// Strong matches start ticked; "similar" ones wait for the user to confirm.
+const strong = mt => !!mt && mt.how !== 'similar';
 
 function extRow(it, st, g) {
   const mt = it.matches[st.pick] || null;
   const found = `<div class="ext-found"><b>${esc(it.name)}</b>${it.version ? ` <span class="mono muted">${esc(it.version)}</span>` : ''}
-    <div class="mono muted ext-path" title="${attr(it.files.join('\n'))}">${esc(it.primary)}${it.files.length > 1 ? ` +${it.files.length - 1} file${it.files.length > 2 ? 's' : ''}` : ''}</div></div>`;
+    ${it.profileUid ? '<div><span class="pill">in ModHaven · not linked</span></div>' : ''}
+    <div class="mono muted ext-path" title="${attr(it.files.join('\n'))}">${esc(it.primary)}${it.files.length > 1 ? ` +${it.files.length - 1} file${it.files.length > 2 ? 's' : ''}` : ''}</div>
+    <button class="btn sm ghost" data-search style="margin-top:6px;padding:0 8px">${I.search}Search the sites…</button></div>`;
   let match;
   if (mt) {
-    const [howText, howCls] = mt.how === 'name' && mt.versionId ? ['Name + version match', 'ok'] : HOW_LABEL[mt.how] || [mt.how, 'info'];
+    const [ht, hc] = howText(mt);
     const upd = mt.latest && mt.versionId && String(mt.latest.versionId) !== String(mt.versionId);
-    const state = upd ? ' <span class="pill info">update available</span>' : !mt.versionId ? ' <span class="pill info">will update to newest</span>' : mt.latest ? ' <span class="pill ok">up to date</span>' : '';
-    const picker = it.matches.length > 1 ? `<select class="input" data-pick style="height:28px;margin-top:6px">${it.matches.map((x, i) => `<option value="${i}" ${i === st.pick ? 'selected' : ''}>${esc(srcMeta(x.source).name)} — ${esc(x.name)} (${esc((HOW_LABEL[x.how] || [x.how])[0])})</option>`).join('')}</select>` : '';
+    const state = upd ? ' <span class="pill info">update available</span>' : mt.latest && mt.versionId ? ' <span class="pill ok">up to date</span>' : '';
+    const picker = it.matches.length > 1 ? `<select class="input" data-pick style="height:28px;margin-top:6px;max-width:100%">${it.matches.map((x, i) => `<option value="${i}" ${i === st.pick ? 'selected' : ''}>${esc(srcMeta(x.source).name)}: ${esc(x.name)}${x.author ? ' by ' + esc(x.author) : ''} (${esc(howText(x)[0])})</option>`).join('')}</select>` : '';
     match = `${img(mt.icon, 'mico')}<div style="min-width:0;flex:1">
-        <div class="row" style="gap:6px;flex-wrap:wrap"><b class="ext-name">${esc(mt.name)}</b>${srcBadge(mt.source)}<span class="pill ${howCls}">${esc(howText)}</span></div>
-        <div class="muted" style="font-size:12.5px">${mt.version ? `You have ${esc(mt.version)}` : 'Installed version not listed on the site'}${mt.latest ? ` · newest ${esc(mt.latest.version || '')}` : ''}${state}</div>
+        <div class="row" style="gap:6px;flex-wrap:wrap"><b class="ext-name">${esc(mt.name)}</b>${srcBadge(mt.source)}<span class="pill ${hc}">${esc(ht)}</span></div>
+        <div class="muted" style="font-size:12.5px">${mt.author ? 'by ' + esc(mt.author) + ' · ' : ''}${mt.version ? `you have ${esc(mt.version)}` : 'your version unknown'}${mt.latest ? ` · newest ${esc(mt.latest.version || '')}` : ''}${state}</div>
         ${picker}
-        ${mt.how === 'name' && !mt.versionId ? '<div class="muted" style="font-size:12px;margin-top:4px">Matched by name only — check it is the same mod before adding.</div>' : ''}</div>
+        ${mt.how === 'similar' ? '<div class="muted" style="font-size:12px;margin-top:4px">Not an exact name match. Check it is the same mod (open the page) before ticking it.</div>' : ''}</div>
       ${mt.url ? `<a class="btn sm ghost" href="${attr(mt.url)}" data-tip="Open on the website">${I.ext}</a>` : ''}`;
   } else {
     const sites = Object.keys(g.sources || {}).map(id => esc(srcMeta(id).name)).join(', ') || 'any mod site';
-    match = `<div class="muted" style="font-size:13px">Not found on ${sites}${it.notSearched ? ' (not searched — too many mods)' : ''}.<br>Tick it to track it in ModHaven anyway (on/off switch, crash tracking — no updates).</div>`;
+    match = `<div class="muted" style="font-size:13px">Nothing close found on ${sites}${it.notSearched ? ' (not searched: too many mods)' : ''}.<br>Use <b>Search the sites…</b> to look it up by another name${it.profileUid ? '' : ', or tick it to track it in ModHaven without updates'}.</div>`;
   }
   return `<div class="ext-row ${st.on ? 'on' : ''}" data-k="${attr(it.key)}">
-    <label class="row"><input type="checkbox" data-on ${st.on ? 'checked' : ''}></label>
+    <label class="row"><input type="checkbox" data-on ${st.on ? 'checked' : ''} ${it.profileUid && !mt ? 'disabled' : ''}></label>
     ${found}<div class="ext-arrow">→</div><div class="ext-match">${match}</div></div>`;
 }
 
-async function reviewExternal() {
+async function reviewExternal(opts = {}) {
   const g = S.game;
   if (!g.installPath && g.key !== 'minecraft') { toast('Set the game folder first (Game settings).', 'warn'); return gameSettings(); }
-  const m = modal(`<header><div><h2>Mods you installed yourself</h2><p>${esc(g.name)} — ModHaven looks for mods in the game folder that it didn't put there, and finds them on the mod sites.</p></div></header>
+  const m = modal(`<header><div><h2>Find your mods on the mod sites</h2><p>${esc(g.name)}: mods you installed yourself, matched to ${Object.keys(g.sources || {}).map(id => esc(srcMeta(id).name)).join(', ') || 'the mod sites'}. Pick the right page for each, and ModHaven downloads it fresh so it can keep it updated.</p></div></header>
     <div class="mbody" id="extBody"><div id="extProg"><div class="row"><span class="spinner"></span><span>Scanning the game folder…</span></div></div></div>
     <footer id="extFoot"><button class="btn" data-a="close">Close</button></footer>`, { wide: true });
   let items = [], sel = new Map();
-  const leaveKeys = () => items.filter(it => !sel.get(it.key).on).map(it => it.key);
   m.el.addEventListener('click', async e => {
     if (e.target.closest('[data-a="close"]')) {
-      // "Leave as is" with the box ticked: don't keep nagging about these.
       const box = $('#extIgnore', m.el);
-      if (box && box.checked && items.length) {
-        await call('external:ignore', { key: g.key, keys: items.map(it => it.key) }).catch(() => { });
+      const loose = items.filter(it => !it.profileUid);
+      if (box && box.checked && loose.length && ![...sel.values()].some(x => x.on)) {
+        await call('external:ignore', { key: g.key, keys: loose.map(it => it.key) }).catch(() => { });
         S.external = { key: g.key, count: 0, names: [] }; renderBanners();
       }
       m.close();
     }
   });
   let res;
-  try { res = await call('external:scan', g.key); }
+  try { res = await call('external:scan', { key: g.key, profile: S.profileName }); }
   catch (e) { $('#extBody', m.el).innerHTML = `<div class="banner bad" style="margin:0"><div class="grow">${esc(e.message)}</div></div>`; return; }
-  items = res.items || [];
+  items = (res.items || []).filter(it => !opts.only || it.key === opts.only);
   if (!items.length) {
-    $('#extBody', m.el).innerHTML = `<div class="placeholder" style="height:auto;padding:30px"><div>${I.check.replace('<svg', '<svg width="54" height="54"')}<b>Nothing to add</b>Every mod in the game folder is already managed by ModHaven${res.ignored ? ` (${res.ignored} you chose to leave alone — <a href="#" id="extUnignore">show them again</a>)` : ''}.</div></div>`;
+    $('#extBody', m.el).innerHTML = `<div class="placeholder" style="height:auto;padding:30px"><div>${I.check.replace('<svg', '<svg width="54" height="54"')}<b>Nothing to add</b>Every mod in the game folder is managed by ModHaven and linked to a mod site${res.ignored ? ` (${res.ignored} you chose to leave alone: <a href="#" id="extUnignore">show them again</a>)` : ''}.</div></div>`;
     const un = $('#extUnignore', m.el);
     if (un) un.onclick = async ev => { ev.preventDefault(); await call('external:unignore', g.key); m.close(); reviewExternal(); };
     S.external = { key: g.key, count: 0, names: [] }; renderBanners();
     return;
   }
-  // Exact matches start ticked; name matches only when the installed version was also found on the site.
-  sel = new Map(items.map(it => [it.key, { on: !!it.best && (it.best.how !== 'name' || !!it.best.versionId), pick: 0 }]));
-  const matched = items.filter(i => i.best).length;
+  sel = new Map(items.map(it => [it.key, { on: strong(it.best), pick: 0 }]));
+  let replace = true;
   const draw = () => {
     const body = $('#extBody', m.el);
     const top = body.scrollTop;
-    body.innerHTML = `<div class="muted" style="font-size:13px">Found <b>${items.length}</b> mod${items.length === 1 ? '' : 's'} in <span class="mono">${esc(res.root)}</span>; <b>${matched}</b> found on the mod sites.
-        Ticked mods are added to the profile <b>${esc(S.profileName)}</b>: ModHaven keeps a backup, takes over their files and puts them straight back, so the game stays the same, and from then on they're updated automatically.</div>
+    const matched = items.filter(i => i.matches.length).length;
+    body.innerHTML = `<div class="muted" style="font-size:13px">${items.length} mod${items.length === 1 ? '' : 's'} to check; candidates found for <b>${matched}</b>. Ticked mods go into the profile <b>${esc(S.profileName)}</b>.
+        Use the dropdown to pick a different page, or <b>Search the sites…</b> if the right one isn't listed. Your current files are always backed up first.</div>
       <div class="ext-list">${items.map(it => extRow(it, sel.get(it.key), g)).join('')}</div>`;
     body.scrollTop = top;
     const n = [...sel.values()].filter(x => x.on).length;
-    $('#extFoot', m.el).innerHTML = `<label class="row muted" style="font-size:12.5px;margin-right:auto"><input type="checkbox" id="extIgnore" checked> Don't ask again about the ones I leave unticked</label>
-      <button class="btn" data-a="close">Leave as is</button><button class="btn primary" data-a="adopt" ${n ? '' : 'disabled'}>${I.plus}Add ${n} to ${esc(S.profileName)}</button>`;
+    const nexusFree = items.some(it => sel.get(it.key).on && (it.matches[sel.get(it.key).pick] || {}).source === 'nexus');
+    $('#extFoot', m.el).innerHTML = `<div style="margin-right:auto;display:flex;flex-direction:column;gap:4px">
+        <label class="row" style="font-size:13px"><input type="checkbox" id="extReplace" ${replace ? 'checked' : ''}> <b>Replace my files with a fresh download from the site</b> (recommended)</label>
+        ${replace && nexusFree ? '<span class="muted" style="font-size:12px;margin-left:22px">Nexus only lets free accounts download through its website: ModHaven links these mods now and opens their pages so you can click “Mod Manager Download”.</span>' : ''}
+        ${items.some(it => !it.profileUid) ? '<label class="row muted" style="font-size:12.5px"><input type="checkbox" id="extIgnore" checked> Don\'t ask again about the ones I leave unticked</label>' : ''}</div>
+      <button class="btn" data-a="close">Leave as is</button><button class="btn primary" data-a="adopt" ${n ? '' : 'disabled'}>${I.dl}${replace ? 'Download' : 'Add'} ${n} mod${n === 1 ? '' : 's'}</button>`;
   };
   draw();
   m.el.addEventListener('change', e => {
+    if (e.target.id === 'extReplace') { replace = e.target.checked; return draw(); }
     const row = e.target.closest('.ext-row');
     if (!row) return;
     const st = sel.get(row.dataset.k);
     if (e.target.matches('[data-on]')) st.on = e.target.checked;
-    if (e.target.matches('[data-pick]')) st.pick = Number(e.target.value);
+    if (e.target.matches('[data-pick]')) { st.pick = Number(e.target.value); st.on = true; }
     draw();
   });
   m.el.addEventListener('click', async e => {
+    const sb = e.target.closest('[data-search]');
+    if (sb) {
+      const row = sb.closest('.ext-row');
+      const it = items.find(x => x.key === row.dataset.k);
+      const q = await prompt2('Search the mod sites', `Name to look for (instead of "${it.name}")`, it.matches[0] ? it.matches[0].name : it.name.replace(/^z+(?=[A-Z])/, '').replace(/([a-z])([A-Z])/g, '$1 $2'), 'Search');
+      if (!q) return;
+      sb.disabled = true; sb.innerHTML = '<span class="spinner" style="width:12px;height:12px"></span>Searching…';
+      try {
+        const found = await call('external:search', { key: g.key, query: q });
+        if (!found.length) { toast(`Nothing found for "${esc(q)}".`, 'warn'); draw(); return; }
+        const keep = it.matches.filter(x => x.how !== 'similar' && x.how !== 'name');
+        it.matches = [...found, ...keep.filter(k => !found.some(f => f.source === k.source && f.modId === k.modId))];
+        it.best = it.matches[0];
+        const st = sel.get(it.key); st.pick = 0; st.on = true;
+      } catch (err) { fail(err); }
+      draw();
+      return;
+    }
     const btn = e.target.closest('[data-a="adopt"]');
     if (!btn) return;
     const picks = items.filter(it => sel.get(it.key).on).map(it => ({ cand: it, match: it.matches[sel.get(it.key).pick] || null }));
-    const leave = leaveKeys();
+    const leave = items.filter(it => !sel.get(it.key).on && !it.profileUid).map(it => it.key);
     const ignoreRest = $('#extIgnore', m.el) && $('#extIgnore', m.el).checked;
-    btn.disabled = true; btn.innerHTML = '<span class="spinner" style="width:14px;height:14px"></span>Adding…';
+    btn.disabled = true; btn.innerHTML = `<span class="spinner" style="width:14px;height:14px"></span>${replace ? 'Downloading' : 'Adding'}…`;
     try {
-      const r = await call('external:adopt', { key: g.key, profile: S.profileName, picks });
+      const r = await call('external:adopt', { key: g.key, profile: S.profileName, picks, replace });
       if (ignoreRest && leave.length) await call('external:ignore', { key: g.key, keys: leave });
       m.close();
-      toast(`Added ${r.added.length} mod${r.added.length === 1 ? '' : 's'} to <b>${esc(S.profileName)}</b>. A backup of the original files is kept in the game's data folder.`, 'ok', 9000);
       S.external = { key: g.key, count: 0, names: [] };
       await reloadProfile();
       setTab('installed');
-      checkUpdates(); // the ones that are out of date get updated now
+      showApplyResult(r);
     } catch (err) { fail(err); btn.disabled = false; btn.innerHTML = 'Try again'; }
+  });
+}
+
+function showApplyResult(r) {
+  const parts = [];
+  if (r.replaced.length) parts.push(`<b>${r.replaced.length}</b> downloaded fresh and will update automatically`);
+  if (r.linked.length) parts.push(`<b>${r.linked.length}</b> linked to their mod page`);
+  if (r.tracked.length) parts.push(`<b>${r.tracked.length}</b> tracked without updates`);
+  if (!r.manual.length) {
+    toast((parts.join(', ') || 'Nothing changed') + '. Your old files are backed up in the game\'s data folder.', r.failed.length ? 'warn' : 'ok', 9000);
+    if (r.failed.length) toast(`Couldn't do: ${r.failed.map(esc).join('; ')}`, 'error', 12000);
+    return;
+  }
+  const mo = modal(`<header><div><h2>One more click for ${r.manual.length} mod${r.manual.length === 1 ? '' : 's'}</h2><p>${parts.join(', ') || 'Nothing downloaded yet'}.</p></div></header>
+    <div class="mbody">
+      <div>These sites only allow downloads through their own website for your account. Open each page and click <b>“Mod Manager Download”</b> (on Nexus: <i>Files</i> tab); ModHaven catches the download and replaces your old files automatically.${r.nxmEnabled ? ' <span class="pill ok">Nexus download links now open in ModHaven</span>' : ''}</div>
+      <div class="vlist">${r.manual.map((x, i) => `<div class="vrow"><span class="grow" style="color:var(--text)"><b>${esc(x.name)}</b></span><button class="btn sm primary" data-open="${i}">${I.ext}Open download page</button></div>`).join('')}</div>
+      <div class="muted" style="font-size:12.5px">Until then they stay installed as they are, already linked to their page, so ModHaven shows when an update is out.<br>No “Mod Manager Download” button on the page? Download the file normally, then in <b>Installed</b> select the mod and click <b>Use a file I downloaded</b>.</div>
+      ${r.failed.length ? `<div class="banner bad" style="margin:0"><div class="grow">Couldn't do: ${r.failed.map(esc).join('; ')}</div></div>` : ''}
+    </div>
+    <footer><button class="btn" data-a="all">${I.ext}Open all ${r.manual.length}</button><button class="btn primary" data-a="done">Done</button></footer>`, { wide: true });
+  mo.el.addEventListener('click', e => {
+    const o = e.target.closest('[data-open]');
+    if (o) { const x = r.manual[Number(o.dataset.open)]; if (x.pageUrl) call('shell:url', x.pageUrl); o.innerHTML = `${I.check}Opened`; }
+    if (e.target.closest('[data-a="all"]')) r.manual.forEach((x, i) => setTimeout(() => x.pageUrl && call('shell:url', x.pageUrl), i * 400));
+    if (e.target.closest('[data-a="done"]')) mo.close();
   });
 }
 

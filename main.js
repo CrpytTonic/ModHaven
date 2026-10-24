@@ -83,9 +83,16 @@ const handlers = {
   'catalog:get': async ({ force } = {}) => catalog.build(SOURCES, s => mm.ctxFor(s), { force }),
   'local:scan': () => local.scan(true),
   'art:lookup': name => steamart.lookup(name),
-  'external:quick': key => scanner.scan(games.get(key), { mm }),
-  'external:scan': key => scanner.scan(games.get(key), { mm, deep: true, onProgress: p => send('external', { key, ...p }) }),
-  'external:adopt': ({ key, profile, picks }) => { const r = scanner.adopt(games.get(key), profile, picks); send('profile', { key, profile }); return r; },
+  'external:quick': ({ key, profile }) => scanner.scan(games.get(key), { mm, profile }),
+  'external:scan': ({ key, profile }) => scanner.scan(games.get(key), { mm, profile, deep: true, onProgress: p => send('external', { key, ...p }) }),
+  'external:search': ({ key, query }) => scanner.searchSites(games.get(key), query, mm),
+  'external:adopt': async ({ key, profile, picks, replace }) => {
+    const r = await scanner.apply(games.get(key), profile, picks, { replace: replace !== false, mm });
+    // Nexus free accounts download through the website button: make sure those links reach ModHaven.
+    if (r.manual.some(m => /nexusmods\.com/.test(m.pageUrl || '')) && !store.settings().nxmHandler) { store.saveSettings({ nxmHandler: true }); setNxm(true); r.nxmEnabled = true; }
+    send('profile', { key, profile });
+    return r;
+  },
   'external:ignore': ({ key, keys }) => scanner.ignore(games.get(key), keys),
   'external:unignore': key => { const g = games.get(key); g.externalIgnored = []; games.save(g); return true; },
   'games:managed': () => games.list(),
@@ -138,6 +145,7 @@ const handlers = {
     return { ...info, versions: versions.slice(0, 60) };
   },
   'mods:install': async ({ key, profile, source, gameId, modId, versionId }) => mm.install(key, profile, { source, gameId, modId, versionId }),
+  'mods:installFileFor': ({ key, profile, uid, path: p }) => mm.installFileFor(key, profile, uid, p),
   'mods:installLocal': async ({ key, profile, paths }) => { const out = []; for (const p of paths) out.push(await mm.installLocal(key, profile, p)); return out; },
   'mods:uninstall': ({ key, profile, uid }) => mm.uninstall(key, profile, uid),
   'mods:update': ({ key, profile, uid }) => {
