@@ -1,3 +1,4 @@
+// ModHaven — Copyright (c) 2026 CrpytTonic. All rights reserved.
 // Nexus Mods.
 //  Browse/search/details/files: public GraphQL v2 (https://api.nexusmods.com/v2/graphql) — works WITHOUT a key.
 //  Fallback (key required): REST v1 (https://api.nexusmods.com/v1, header apikey).

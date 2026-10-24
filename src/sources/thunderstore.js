@@ -1,3 +1,4 @@
+// ModHaven — Copyright (c) 2026 CrpytTonic. All rights reserved.
 // Thunderstore (thunderstore.io) — keyless.
 // Listing/search: cyberstorm API (what the new site uses), 20 results per API page.
 // Fallback: per-community v1 package dump, cached 15 min, filtered/sorted/paged locally.

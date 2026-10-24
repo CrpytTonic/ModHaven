@@ -1,3 +1,4 @@
+/* ModHaven — Copyright (c) 2026 CrpytTonic. All rights reserved. */
 /* ModHaven UI */
 :root {
   --accent: #7c5cff;
@@ -443,3 +444,5 @@ html[data-theme="light"] .pill.bad { color: #b01f24; }
 .ext-match { display: flex; gap: 10px; align-items: flex-start; min-width: 0; }
 .ext-match .mico { width: 36px; height: 36px; border-radius: 8px; object-fit: cover; background: var(--surface-3); flex: none; }
 .ext-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 260px; }
+
+.brand .by { font: 500 11.5px var(--font); color: var(--text-3); margin-left: 2px; }

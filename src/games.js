@@ -1,3 +1,4 @@
+// ModHaven — Copyright (c) 2026 CrpytTonic. All rights reserved.
 // Managed games (the ones you've opened in ModHaven) and their profiles.
 const fs = require('fs');
 const path = require('path');

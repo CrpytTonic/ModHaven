@@ -1,5 +1,7 @@
 # ModHaven
 
+By **CrpytTonic**. Copyright (c) 2026 CrpytTonic. All rights reserved; see [LICENSE](LICENSE).
+
 All-in-one mod manager for Windows: browse, install and auto-update mods from **Thunderstore, Modrinth, GameBanana, Nexus Mods and CurseForge** in one place, with profiles, crash tracking and a culprit finder that pinpoints which mod (or pair of mods) crashes the game.
 
 Run: `dist\ModHaven-win32-x64\ModHaven.exe` (Desktop / Start menu shortcut "ModHaven").

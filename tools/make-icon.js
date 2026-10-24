@@ -1,3 +1,4 @@
+// ModHaven — Copyright (c) 2026 CrpytTonic. All rights reserved.
 // Run with: electron tools/make-icon.js  -> app/icon.png + app/icon.ico (PNG-in-ICO, 16..256)
 const { app, BrowserWindow } = require('electron');
 const fs = require('fs'), path = require('path');

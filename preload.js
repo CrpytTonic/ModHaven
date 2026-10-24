@@ -1,3 +1,4 @@
+// ModHaven — Copyright (c) 2026 CrpytTonic. All rights reserved.
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 const listeners = new Map();

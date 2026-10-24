@@ -1,3 +1,4 @@
+// ModHaven — Copyright (c) 2026 CrpytTonic. All rights reserved.
 // Install / uninstall / update mods in a profile, including dependencies.
 const fs = require('fs');
 const store = require('./store');

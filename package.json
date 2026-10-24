@@ -9,7 +9,7 @@
     "test:sources": "node tools/test-sources.js",
     "package": "node tools/package.js"
   },
-  "license": "UNLICENSED",
+  "license": "SEE LICENSE IN LICENSE",
   "dependencies": {
     "7zip-bin": "^5.2.0",
     "adm-zip": "^0.5.16",
@@ -19,5 +19,8 @@
   "devDependencies": {
     "@electron/packager": "^18.3.6",
     "electron": "^33.2.0"
-  }
+  },
+  "author": "CrpytTonic",
+  "copyright": "Copyright (c) 2026 CrpytTonic. All rights reserved.",
+  "homepage": "https://github.com/CrpytTonic/ModHaven"
 }

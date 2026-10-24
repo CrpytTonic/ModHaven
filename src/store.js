@@ -1,3 +1,4 @@
+// ModHaven — Copyright (c) 2026 CrpytTonic. All rights reserved.
 // Portable data folder + small JSON store helpers.
 const fs = require('fs');
 const path = require('path');

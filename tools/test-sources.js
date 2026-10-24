@@ -1,3 +1,4 @@
+// ModHaven — Copyright (c) 2026 CrpytTonic. All rights reserved.
 #!/usr/bin/env node
 // Live smoke test for src/sources adapters.
 //   node tools/test-sources.js              -> call every keyless adapter against the live APIs

@@ -1,3 +1,4 @@
+// ModHaven — Copyright (c) 2026 CrpytTonic. All rights reserved.
 /* ModHaven renderer */
 'use strict';
 const call = (ch, arg) => window.mh.call(ch, arg);
@@ -284,7 +285,7 @@ function renderSidebar() {
   if (!S.managed.length) { box.innerHTML = '<div class="empty-side">Pick a game to start modding. It will show up here.</div>'; }
   else box.innerHTML = S.managed.map(g => `<button class="mygame ${S.view === 'game' && S.game && S.game.key === g.key ? 'on' : ''}" data-key="${attr(g.key)}" title="${attr(g.name)}">
       ${gameArt(g, 'thumb')}<span>${esc(g.name)}</span>${S.running[g.key] ? '<i class="pulse live" title="Running"></i>' : ''}</button>`).join('');
-  $('#sideFoot').innerHTML = `ModHaven ${esc(S.info.version)} · <a href="#" id="openData">data folder</a>`;
+  $('#sideFoot').innerHTML = `ModHaven ${esc(S.info.version)} by <a href="${attr(S.info.homepage)}">${esc(S.info.author)}</a> · <a href="#" id="openData">data folder</a>`;
 }
 document.addEventListener('click', e => {
   const nav = e.target.closest('.nav');
@@ -1612,6 +1613,9 @@ function renderSettings() {
     <div class="sgroup"><h2>Crash testing</h2>
       ${row('Count a test as working after', 'Used by the automatic culprit finder: if the game is still running after this long, that set of mods is OK.', `<span class="row"><input class="input" type="number" min="15" max="900" data-set="autoTestSeconds" value="${attr(st.autoTestSeconds)}" style="width:86px"> seconds</span>`)}
       ${row('Close the game after a passing test', '', sw('closeGameAfterAutoTest', st.closeGameAfterAutoTest))}
+    </div>
+    <div class="sgroup"><h2>About</h2>
+      <div class="srow"><div class="sl"><b>ModHaven ${esc(S.info.version)}</b><span>Created by ${esc(S.info.author)} · Copyright (c) 2026 ${esc(S.info.author)}. All rights reserved.</span></div><a class="btn" href="${attr(S.info.homepage)}">${I.ext}Project page</a></div>
     </div>
     <div class="sgroup"><h2>Storage</h2>
       <div class="srow"><div class="sl"><b>Data folder</b><span class="mono">${esc(S.info.dataRoot)}</span></div><button class="btn" id="sOpenData">${I.folder}Open</button></div>

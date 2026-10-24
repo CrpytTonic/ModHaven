@@ -1,3 +1,4 @@
+// ModHaven — Copyright (c) 2026 CrpytTonic. All rights reserved.
 // Turns launch history into per-mod status triangles and mod-vs-mod conflict info,
 // and runs the "find the culprit" search (split the mod list in half until the crash is pinned down).
 const games = require('./games');

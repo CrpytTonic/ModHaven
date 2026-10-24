@@ -1,3 +1,4 @@
+// ModHaven — Copyright (c) 2026 CrpytTonic. All rights reserved.
 // Artwork for games none of the mod sites have pictures for: look the game up on the Steam
 // store by name. Results (including "not on Steam") are saved, so each game is asked once.
 //

@@ -1,9 +1,12 @@
+// ModHaven — Copyright (c) 2026 CrpytTonic. All rights reserved.
 // ModHaven — Electron main process.
 const { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const store = require('./src/store');
 
+const AUTHOR = 'CrpytTonic';
+const HOMEPAGE = 'https://github.com/CrpytTonic/ModHaven';
 const IS_PACKAGED = app.isPackaged;
 const APP_DIR = IS_PACKAGED ? path.dirname(process.execPath) : __dirname;
 store.init(process.env.MH_DATA || APP_DIR, app.getPath('appData'));
@@ -44,7 +47,7 @@ function createWindow() {
     width: st.width, height: st.height, x: st.x, y: st.y, minWidth: 980, minHeight: 620,
     backgroundColor: themeNow() === 'dark' ? '#0f1117' : '#f3f4f8',
     titleBarStyle: 'hidden', titleBarOverlay: { ...THEME_BAR[themeNow()], height: 38 },
-    title: 'ModHaven', icon: path.join(__dirname, 'app', 'icon.png'), show: false,
+    title: 'ModHaven by ' + AUTHOR, icon: path.join(__dirname, 'app', 'icon.png'), show: false,
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false },
   });
   if (st.maximized) win.maximize();
@@ -64,7 +67,7 @@ function openUrl(url) { if (/^https?:\/\//i.test(url)) shell.openExternal(url); 
 
 // ---------- IPC ----------
 const handlers = {
-  'app:info': () => ({ version: app.getVersion(), dataRoot: store.ROOT, packaged: IS_PACKAGED, sevenZip: !!installer.find7z(),
+  'app:info': () => ({ version: app.getVersion(), author: AUTHOR, homepage: HOMEPAGE, dataRoot: store.ROOT, packaged: IS_PACKAGED, sevenZip: !!installer.find7z(),
     sources: SOURCES.map(s => ({ id: s.id, name: s.name, color: s.color, site: s.site, needsKey: !!s.needsKey, keylessBrowse: !!s.keylessBrowse, keyHelp: s.keyHelp || '' })) }),
   'settings:get': () => store.settings(),
   'settings:set': patch => {

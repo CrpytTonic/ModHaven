@@ -1,3 +1,4 @@
+// ModHaven — Copyright (c) 2026 CrpytTonic. All rights reserved.
 // Shared HTTP helpers for source adapters (main process, Node 20+ fetch).
 const UA = 'ModHaven/1.0 (desktop mod manager)';
 const memo = new Map(); // url -> {t, data}

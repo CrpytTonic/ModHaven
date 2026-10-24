@@ -1,3 +1,4 @@
+// ModHaven — Copyright (c) 2026 CrpytTonic. All rights reserved.
 // Finds games installed through Steam, Epic and GOG, and reads their version.
 const fs = require('fs');
 const path = require('path');

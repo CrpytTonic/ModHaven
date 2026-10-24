@@ -1,3 +1,4 @@
+// ModHaven — Copyright (c) 2026 CrpytTonic. All rights reserved.
 // Launches the game, watches it, and collects crash evidence when it goes down.
 const fs = require('fs');
 const path = require('path');

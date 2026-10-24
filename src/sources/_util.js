@@ -1,3 +1,4 @@
+// ModHaven — Copyright (c) 2026 CrpytTonic. All rights reserved.
 // Shared helpers for source adapters. Not an adapter (index.js does not list it).
 
 // Display name cleanup: strip trademark symbols and collapse whitespace.

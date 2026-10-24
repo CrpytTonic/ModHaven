@@ -1,3 +1,4 @@
+// ModHaven — Copyright (c) 2026 CrpytTonic. All rights reserved.
 // Modrinth (api.modrinth.com/v2) — keyless. Minecraft only (project_type:mod).
 const { iso, num, qs } = require('./_util');
 

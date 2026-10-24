@@ -1,3 +1,4 @@
+// ModHaven — Copyright (c) 2026 CrpytTonic. All rights reserved.
 // CurseForge (api.curseforge.com) — needs a free API key (ctx.keys.curseforge, header x-api-key).
 const { cleanName, gameSlug, iso, num, noKey, qs } = require('./_util');
 

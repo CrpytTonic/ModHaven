@@ -1,3 +1,4 @@
+// ModHaven — Copyright (c) 2026 CrpytTonic. All rights reserved.
 // Downloads, unpacks and stages mods, then deploys a profile's enabled mods into the game folder.
 const fs = require('fs');
 const path = require('path');

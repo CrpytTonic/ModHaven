@@ -1,3 +1,4 @@
+// ModHaven — Copyright (c) 2026 CrpytTonic. All rights reserved.
 // Finds mods the user installed by hand (not through ModHaven), matches them to the mod sites,
 // and "adopts" the chosen ones into a profile so they can be updated like any other mod.
 const fs = require('fs');

@@ -1,3 +1,4 @@
+// ModHaven — Copyright (c) 2026 CrpytTonic. All rights reserved.
 // Builds the portable app into dist\ModHaven-win32-x64 without touching "ModHaven Data".
 // Packs to dist-stage first, then swaps the program files in.
 const path = require('path');
@@ -14,7 +15,7 @@ const KEEP = 'ModHaven Data';
   const [out] = await packager({
     dir: ROOT, out: STAGE, name: 'ModHaven', platform: 'win32', arch: 'x64', overwrite: true,
     icon: path.join(ROOT, 'app', 'icon.ico'), asar: { unpack: '**/node_modules/7zip-bin/**' },
-    appCopyright: 'ModHaven', win32metadata: { CompanyName: 'ModHaven', FileDescription: 'ModHaven mod manager', ProductName: 'ModHaven' },
+    appCopyright: 'Copyright (c) 2026 CrpytTonic. All rights reserved.', win32metadata: { CompanyName: 'CrpytTonic', FileDescription: 'ModHaven mod manager by CrpytTonic', ProductName: 'ModHaven', InternalName: 'ModHaven', OriginalFilename: 'ModHaven.exe' },
     ignore: [/^\/dist/, /^\/dist-stage/, /^\/ModHaven Data/, /^\/tools/, /^\/backups/, /\.log$/, /node_modules\/(electron|@electron|marked|dompurify)\//],
   });
   fs.mkdirSync(DIST, { recursive: true });

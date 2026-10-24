@@ -1,3 +1,4 @@
+// ModHaven — Copyright (c) 2026 CrpytTonic. All rights reserved.
 // GameBanana (gamebanana.com/apiv11) — keyless.
 //  games:   Game/Index (50 per page, ~100 pages) — fetched once, cached 12 h
 //  mods:    Mod/Index?_aFilters[Generic_Game]=id&_sSort=...   (browse)

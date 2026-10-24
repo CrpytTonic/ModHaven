@@ -1,3 +1,4 @@
+// ModHaven — Copyright (c) 2026 CrpytTonic. All rights reserved.
 // Merges the game lists of every source into one catalog, matched by name / Steam id,
 // and marks the ones installed on this PC.
 const store = require('./store');
