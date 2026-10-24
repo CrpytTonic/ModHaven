@@ -917,6 +917,7 @@ async function renderInstalledDetail(uid) {
       <div class="dactions">
         ${hasUpdate(m) ? `<button class="btn primary" data-a="update">${I.up}Update to ${esc(m.latest.version)}</button>` : ''}
         ${m.source !== 'local' ? `<button class="btn" data-a="versions">${I.down}Change version</button>` : ''}
+        ${m.rawLayout && m.source !== 'local' ? `<button class="btn" data-a="unlink" data-tip="Linked to the wrong page? Undo the link; your files stay as they are.">${I.x}Unlink</button>` : ''}
         ${m.source !== 'local' ? `<button class="btn" data-a="usefile" data-tip="Downloaded this mod from its website yourself? Pick the file and ModHaven installs it in place of the old one, keeping the link for updates.">${I.file}Use a file I downloaded</button>` : `<button class="btn" data-a="relink">${I.search}Find on mod sites</button>`}
         ${m.url ? `<button class="btn" data-a="web">${I.ext}Website</button>` : ''}
         <button class="btn" data-a="folder">${I.folder}Files</button>
@@ -945,6 +946,13 @@ async function renderInstalledDetail(uid) {
       if (a.dataset.a === 'update') await doInstall({ source: m.source, gameId: m.gameId, modId: m.id, versionId: m.latest.versionId }, `${m.name} ${m.latest.version}`);
       if (a.dataset.a === 'versions') versionPicker(m);
       if (a.dataset.a === 'relink') reviewExternal({ only: 'profile:' + m.uid });
+      if (a.dataset.a === 'unlink') {
+        if (!(await confirmBox('Unlink this mod?', `<b>${esc(m.name)}</b> stops being linked to its ${esc(srcMeta(m.source).name)} page. Your files in the game stay exactly as they are; you can link it to the right page afterwards with <b>Find on mod sites</b>.`, 'Unlink'))) return;
+        const e2 = await call('external:unlink', { key: S.game.key, profile: S.profileName, uid });
+        S.inst.sel = e2.uid;
+        toast(`Unlinked. It's back to <b>${esc(e2.name)}</b> (your own files).`, 'ok');
+        await reloadProfile();
+      }
       if (a.dataset.a === 'usefile') {
         const file = await call('dialog:pick', { kind: 'file', title: `File for ${m.name}`, filters: [{ name: 'Mod files', extensions: ['zip', '7z', 'rar', 'pak', 'dll', 'jar', 'esp', 'esm', 'esl'] }, { name: 'All files', extensions: ['*'] }] });
         if (!file) return;

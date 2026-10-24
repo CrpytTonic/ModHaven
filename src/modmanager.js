@@ -80,7 +80,7 @@ async function install(key, profileName, { source: sid, gameId, modId, versionId
   await installer.stageMod(game, entry, dl);
   profile = games.profile(key, profileName); // re-read: dependencies may have changed it
   const old = profile.mods.find(m => m.uid === uid);
-  const keep = old ? { enabled: old.enabled, order: old.order, notes: old.notes, pinned: !!versionId || old.pinned, autoUpdate: old.autoUpdate, dependencyOf: old.dependencyOf, installedAt: old.installedAt } : {};
+  const keep = old ? { enabled: old.enabled, order: old.order, notes: old.notes, pinned: (!!versionId && !nxm) || old.pinned, autoUpdate: old.autoUpdate, dependencyOf: old.dependencyOf, installedAt: old.installedAt, modFolder: old.modFolder || installer.modFolderOf((old.adopted && old.adopted.files) || old.deployedFiles), adopted: old.adopted ? { ...old.adopted, replacedAt: new Date().toISOString() } : undefined } : {};
   const merged = {
     ...entry, enabled: true, order: profile.mods.length, installedAt: new Date().toISOString(),
     dependencyOf: dependencyOf ? [dependencyOf] : [], pinned: !!versionId, autoUpdate: null, notes: '',

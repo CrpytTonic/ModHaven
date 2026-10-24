@@ -413,6 +413,8 @@ async function match(game, cands, mm, onProgress) {
   });
 }
 
+const modFolderOf = installer.modFolderOf;
+
 const candidateNames = c => [...new Set([c.name, c.altName, prettyName(path.basename(c.primary || '')), c.modid, ...(c.searchNames || [])].filter(x => x && String(x).length >= 3))];
 
 // Finds likely site mods for a list of names. Returns scored matches (best first, max 3 per site).
@@ -537,6 +539,7 @@ function adoptRaw(game, profileName, picks, backup) {
       fileName: path.basename(cand.primary), modUpdatedAt: (m && m.versionDate) || null, gameVersions: [], categories: [],
       enabled: true, order: profile.mods.length, installedAt: new Date().toISOString(), dependencyOf: [], pinned: !m, autoUpdate: null, notes: '',
       adopted: { at: new Date().toISOString(), how: m ? m.how : 'not matched', files: cand.files.slice(0, 500), backup }, rawLayout: true,
+      modFolder: modFolderOf(cand.files),
       latest: m && m.latest ? m.latest : null,
     };
     if (source === 'curseforge') require('./modmanager').stripStored(entry);
@@ -639,14 +642,38 @@ function linkEntry(game, profileName, uid, m) {
   const newUid = `${m.source}:${m.modId}`;
   if (p.mods.some(x => x.uid === newUid)) return;
   const oldDir = installer.stageDir(game, e);
+  if (!e.modFolder) e.modFolder = modFolderOf((e.adopted && e.adopted.files) || installer.walkFiles(oldDir));
   Object.assign(e, { uid: newUid, source: m.source, id: String(m.modId), gameId: String(m.gameId), name: m.name, author: m.author || e.author, icon: m.icon || null, url: m.url || null,
     summary: m.summary || e.summary, version: m.version || e.version, versionId: m.versionId ? String(m.versionId) : e.versionId, modUpdatedAt: m.versionDate || null,
     pinned: false, latest: m.latest || null, adopted: { ...(e.adopted || {}), how: m.how, linkedAt: new Date().toISOString() } });
   if (m.source === 'curseforge') require('./modmanager').stripStored(e);
   const newDir = installer.stageDir(game, e);
-  if (oldDir !== newDir && exists(oldDir)) { fs.mkdirSync(path.dirname(newDir), { recursive: true }); try { fs.renameSync(oldDir, newDir); } catch { installer.walkFiles && games.copyDir(oldDir, newDir); } }
+  if (oldDir !== newDir && exists(oldDir)) { fs.mkdirSync(path.dirname(newDir), { recursive: true }); try { fs.renameSync(oldDir, newDir); } catch { games.copyDir(oldDir, newDir); } }
+  try { if (path.dirname(oldDir) !== path.dirname(newDir)) fs.rmdirSync(path.dirname(oldDir)); } catch { } // only if empty
   for (const x of p.mods) if (x.dependencyOf) x.dependencyOf = x.dependencyOf.map(u => (u === uid ? newUid : u));
   games.saveProfile(game.key, p);
+}
+
+// Undo a wrong link: the mod goes back to being a local, unlinked mod (files unchanged).
+function unlink(game, profileName, uid) {
+  const p = games.profile(game.key, profileName);
+  const e = p.mods.find(x => x.uid === uid);
+  if (!e) throw new Error('Mod not found');
+  if (!e.rawLayout) throw new Error('Only mods taken over from the game folder can be unlinked; uninstall this one instead.');
+  const oldDir = installer.stageDir(game, e);
+  const files = installer.walkFiles(oldDir).filter(f => f !== '.staged');
+  const base = (e.adopted && e.adopted.files && e.adopted.files[0]) || files[0] || e.name;
+  const name = prettyName(path.basename(String(base))).replace(/\s+/g, '') || e.name;
+  const newUid = `local:${store.safeName(name).slice(0, 60)}`;
+  if (p.mods.some(x => x.uid === newUid)) throw new Error('A local mod with that name already exists');
+  Object.assign(e, { uid: newUid, source: 'local', id: newUid.slice(6), gameId: '', name, author: 'You', icon: null, url: null, latest: null, pinned: true,
+    summary: `Found in the game folder (${base})`, adopted: { ...(e.adopted || {}), how: 'not matched', unlinkedAt: new Date().toISOString() } });
+  const newDir = installer.stageDir(game, e);
+  if (oldDir !== newDir && exists(oldDir)) { fs.mkdirSync(path.dirname(newDir), { recursive: true }); fs.renameSync(oldDir, newDir); }
+  try { fs.rmdirSync(path.dirname(oldDir)); } catch { } // remove the now-empty "<name> [source-id]" folder
+  games.saveProfile(game.key, p);
+  try { installer.deploy(game, games.profile(game.key, profileName)); } catch (err) { store.log('deploy after unlink', err); }
+  return e;
 }
 
 // Remembers "not a mod / leave it alone" choices.
@@ -683,4 +710,4 @@ async function scan(game, { mm, deep = false, onProgress, profile } = {}) {
   return { root, layout, count: matched.length, items: matched, ignored: candidates.length - fresh.length };
 }
 
-module.exports = { scan, adopt, apply, searchSites, similarity, prettyName, ignore, detect, describe, match, cfFingerprint, dllInfo, jarInfo };
+module.exports = { modFolderOf, unlink, scan, adopt, apply, searchSites, similarity, prettyName, ignore, detect, describe, match, cfFingerprint, dllInfo, jarInfo };

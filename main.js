@@ -93,6 +93,7 @@ const handlers = {
     send('profile', { key, profile });
     return r;
   },
+  'external:unlink': ({ key, profile, uid }) => { const e = scanner.unlink(games.get(key), profile, uid); send('profile', { key, profile }); return e; },
   'external:ignore': ({ key, keys }) => scanner.ignore(games.get(key), keys),
   'external:unignore': key => { const g = games.get(key); g.externalIgnored = []; games.save(g); return true; },
   'games:managed': () => games.list(),

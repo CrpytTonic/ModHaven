@@ -203,7 +203,8 @@ function mapFiles(stageDir, mod, layout, game) {
     const proj = (game && game.installPath && unrealProject(game.installPath)) || 'Game';
     const bin = `${proj}/Binaries/Win64`;
     const ue4ssDir = game && game.installPath && fs.existsSync(path.join(game.installPath, proj, 'Binaries', 'Win64', 'ue4ss')) ? `${bin}/ue4ss` : bin;
-    const folder = store.safeName(mod.name || mod.id).replace(/\s+/g, '');
+    // Keep the folder the mod already had in ~mods (e.g. "NoCraftedPopup"); otherwise name it after the mod.
+    const folder = mod.modFolder || store.safeName(mod.name || mod.id).replace(/\s+/g, '');
     const projRe = new RegExp('^' + proj.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '/', 'i');
     // UE4SS script mods: a folder holding Scripts/main.lua, enabled.txt or dlls/main.dll
     const luaRoots = new Set(fl.map(([, r]) => r).map(r => (r.match(/^(.*?)(?:^|\/)(?:Scripts\/main\.lua|enabled\.txt|dlls\/main\.dll)$/i) || [])[1]).filter(x => x !== undefined));
@@ -236,7 +237,32 @@ function mapFiles(stageDir, mod, layout, game) {
 }
 
 // ---------- staging ----------
-const stageDir = (game, mod) => games.gdir(game.key, 'mods', store.safeName(`${mod.source}-${mod.id}`), store.safeName(String(mod.versionId)));
+// The mod's own folder inside ~mods / LogicMods / ue4ss Mods, so a replacement lands in the same place.
+function modFolderOf(files) {
+  for (const f of files || []) {
+    const m = String(f).match(/(?:^|\/)(?:~mods|LogicMods|Mods)\/([^/]+)\/[^/]+$/i) || String(f).match(/(?:^|\/)(?:~mods|Mods)\/([^/]+)\//i);
+    if (m) return m[1];
+  }
+  return null;
+}
+
+// ModHaven's own copy of each mod lives in games/<game>/mods/<Mod name> [source-id]/<version>/.
+// (Older versions used just "source-id"; those folders are renamed the first time they're used.)
+function modStoreDir(game, mod) {
+  const parent = games.gdir(game.key, 'mods');
+  const tag = store.safeName(`${mod.source}-${mod.id}`);
+  const want = store.safeName(`${String(mod.name || mod.id).trim().slice(0, 60)} [${tag}]`);
+  let ents = [];
+  try { ents = fs.readdirSync(parent); } catch { }
+  // Tidy folders left empty by earlier versions of ModHaven.
+  for (const e of ents) { try { const d = path.join(parent, e); if (!fs.readdirSync(d).length) fs.rmdirSync(d); } catch { } }
+  const have = ents.find(e => e === want && fs.existsSync(path.join(parent, e))) || ents.find(e => (e === tag || e.endsWith(` [${tag}]`)) && fs.existsSync(path.join(parent, e)));
+  if (have && have !== want) {
+    try { fs.renameSync(path.join(parent, have), path.join(parent, want)); } catch { return path.join(parent, have); }
+  }
+  return path.join(parent, want);
+}
+const stageDir = (game, mod) => path.join(modStoreDir(game, mod), store.safeName(String(mod.versionId)));
 
 // version: {id, version, fileName, downloadUrl}; dl: {url, fileName, headers}
 // Two installs can need the same file at once (an update and a dependency of another update):
@@ -449,5 +475,5 @@ function ownerOf(game, fileName) {
   return null;
 }
 
-module.exports = { stageFileFor, unrealProject, setEmitter, download, markDownload, clearDownloads, dlState, extract, stageMod, stageLocal, stageDir,
+module.exports = { modFolderOf, modStoreDir, stageFileFor, unrealProject, setEmitter, download, markDownload, clearDownloads, dlState, extract, stageMod, stageLocal, stageDir,
   pruneOldVersions, deploy, undeploy, deployedInfo, fileConflicts, resolveLayout, targetRoot, mapFiles, ownerOf, walkFiles, find7z };
