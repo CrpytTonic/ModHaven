@@ -53,7 +53,7 @@
       <tr><td>Download a file the user chose to install</td><td><code>GET /v1/mods/{id}/files/{fileId}/download-url</code></td></tr>
       <tr><td>Recognise mods already on disk</td><td><code>POST /v1/fingerprints/{gameId}</code></td></tr>
     </table>
-    <p>Results are cached locally to keep request volume low. Files are downloaded only when the user installs or updates a mod. Mods whose authors have disabled third-party distribution are never downloaded; ModHaven opens their CurseForge page instead. Mod names, authors and links are shown as they appear on CurseForge, and every mod links back to its CurseForge page. Nothing is redistributed or mirrored.</p>
+    <p>ModHaven does not save or cache CurseForge API data: lists, descriptions and pictures are requested from the API when the user views them, and a profile keeps only the mod and file ids needed to know which file is installed. Each user enters their own API key, which stays on their own PC; no key is built into ModHaven or shared. Files are downloaded only when the user installs or updates a mod. Mods whose authors have disabled third-party distribution are never downloaded; ModHaven opens their CurseForge page instead. Mod names, authors and links are shown as they appear on CurseForge, and every mod links back to its CurseForge page. Nothing is redistributed or mirrored.</p>
   </div>
 
   <figure><img src="crash.png" alt="Crash center"><figcaption>Crash center: launch history and the conflict map between mods.</figcaption></figure>

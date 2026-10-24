@@ -434,6 +434,7 @@ function adopt(game, profileName, picks) {
       adopted: { at: new Date().toISOString(), how: m ? m.how : 'not matched', files: cand.files.slice(0, 500), backup }, rawLayout: true,
       latest: m && m.latest ? m.latest : null,
     };
+    if (source === 'curseforge') require('./modmanager').stripStored(entry);
     const stage = installer.stageDir(game, entry);
     for (const f of cand.files) {
       const src = path.join(root, f);

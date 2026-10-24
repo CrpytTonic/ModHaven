@@ -1159,6 +1159,8 @@ function markInstalledInBrowse() {
 
 async function getDetails(source, gameId, modId, fresh) {
   const k = `${source}|${gameId}|${modId}`;
+  // CurseForge's terms forbid caching its data: always ask again.
+  if (source === 'curseforge') return call('mods:details', { source, gameId, modId });
   if (!fresh && detailCache.has(k)) return detailCache.get(k);
   const p = call('mods:details', { source, gameId, modId });
   detailCache.set(k, p);

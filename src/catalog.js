@@ -27,21 +27,25 @@ async function build(sources, ctxFor, { force = false } = {}) {
   const enabledIds = `v${CATALOG_VER}:` + enabled.map(s => s.id).sort().join(',');
   let perSource = {};
   const errors = {};
+  const live = enabled.filter(s => s.noStore);
+  const fetchLive = s => s.listGames(ctxFor(s)).then(l => { perSource[s.id] = l; }).catch(e => { errors[s.id] = e.message; store.log('listGames failed', s.id, e); });
   if (cached && !force && Date.now() - cached.t < CATALOG_TTL && cached.enabledIds === enabledIds) {
-    perSource = cached.perSource;
+    perSource = { ...cached.perSource };
+    await Promise.all(live.map(fetchLive));
   } else {
     await Promise.all(enabled.map(async s => {
       try { perSource[s.id] = await s.listGames(ctxFor(s)); }
       catch (e) {
         errors[s.id] = e.message;
         store.log('listGames failed', s.id, e);
-        if (cached && cached.perSource && cached.perSource[s.id]) perSource[s.id] = cached.perSource[s.id];
+        if (!s.noStore && cached && cached.perSource && cached.perSource[s.id]) perSource[s.id] = cached.perSource[s.id];
       }
     }));
-    store.writeJson(file, { t: Date.now(), enabledIds, perSource });
+    const keep = Object.fromEntries(Object.entries(perSource).filter(([id]) => !live.some(s => s.id === id)));
+    store.writeJson(file, { t: Date.now(), enabledIds, perSource: keep });
   }
   const installed = await local.scan();
-  return { games: merge(perSource, installed), errors };
+  return { games: merge({ ...perSource }, installed), errors };
 }
 
 function merge(perSource, installed) {

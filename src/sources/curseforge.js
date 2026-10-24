@@ -16,7 +16,10 @@ function key(ctx) {
   return k;
 }
 
+// CurseForge's API terms (§3.1) forbid saving or caching API data, so every call goes to the API.
 async function cf(ctx, path, opts = {}) {
+  const { ttl, ...rest } = opts; // eslint-disable-line no-unused-vars
+  opts = rest;
   try {
     return await ctx.fetchJson(API + path, { ...opts, headers: { 'x-api-key': key(ctx), ...(opts.headers || {}) } });
   } catch (e) {
@@ -88,6 +91,7 @@ function mapFile(f) {
 
 module.exports = {
   id: 'curseforge',
+  noStore: true, // terms: no saving/caching of API data
   name: 'CurseForge',
   color: '#f16436',
   site: WEB,

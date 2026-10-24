@@ -75,6 +75,7 @@ async function install(key, profileName, { source: sid, gameId, modId, versionId
     result.manual.push({ name: info.name, pageUrl: dl.pageUrl, reason: dl.reason || 'This mod has to be downloaded from the website', uid, entry });
     return result;
   }
+  if (s.noStore) stripStored(entry);
   await installer.stageMod(game, entry, dl);
   profile = games.profile(key, profileName); // re-read: dependencies may have changed it
   const old = profile.mods.find(m => m.uid === uid);
@@ -92,6 +93,17 @@ async function install(key, profileName, { source: sid, gameId, modId, versionId
   refreshDeployed(key, profileName);
   emit('profile', { key, profile: profileName });
   return result;
+}
+
+// Sites whose terms forbid storing their data: a profile keeps only the ids, version and
+// file name needed to know what is installed; description and pictures are fetched when shown.
+function stripStored(entry) {
+  entry.summary = '';
+  entry.icon = null;
+  entry.categories = [];
+  entry.gameVersions = [];
+  entry.loaders = [];
+  return entry;
 }
 
 // If this profile is the one currently in the game folder, put the change there now,
@@ -160,7 +172,7 @@ async function checkUpdates(key, profileName, { autoInstall } = {}) {
       if (!cur) return;
       cur.latest = v ? { versionId: String(v.id), version: v.version, date: v.date } : null;
       cur.lastChecked = new Date().toISOString();
-      if (info) { cur.deprecated = !!info.deprecated; if (info.icon) cur.icon = info.icon; }
+      if (info) { cur.deprecated = !!info.deprecated; if (info.icon && !s.noStore) cur.icon = info.icon; }
       games.saveProfile(key, p);
       if (v && String(v.id) !== String(m.versionId) && (!m.modUpdatedAt || !v.date || v.date >= m.modUpdatedAt)) {
         const allow = m.autoUpdate === true || (m.autoUpdate !== false && auto && !m.pinned);
@@ -190,4 +202,4 @@ async function checkAll() {
   return out;
 }
 
-module.exports = { init, ctxFor, source, install, installLocal, uninstall, checkUpdates, checkAll, uidOf, pickVersion };
+module.exports = { stripStored, init, ctxFor, source, install, installLocal, uninstall, checkUpdates, checkAll, uidOf, pickVersion };
