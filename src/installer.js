@@ -202,7 +202,8 @@ function mapFiles(stageDir, mod, layout, game) {
   if (layout === 'unreal') {
     const proj = (game && game.installPath && unrealProject(game.installPath)) || 'Game';
     const bin = `${proj}/Binaries/Win64`;
-    const ue4ssDir = game && game.installPath && fs.existsSync(path.join(game.installPath, proj, 'Binaries', 'Win64', 'ue4ss')) ? `${bin}/ue4ss` : bin;
+    const hasUe4ssFolder = game && game._ue4ssFolder !== undefined ? game._ue4ssFolder : !!(game && game.installPath && fs.existsSync(path.join(game.installPath, proj, 'Binaries', 'Win64', 'ue4ss')));
+    const ue4ssDir = hasUe4ssFolder ? `${bin}/ue4ss` : bin;
     // Keep the folder the mod already had in ~mods (e.g. "NoCraftedPopup"); otherwise name it after the mod.
     const folder = mod.modFolder || store.safeName(mod.name || mod.id).replace(/\s+/g, '');
     const projRe = new RegExp('^' + proj.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '/', 'i');
@@ -214,7 +215,7 @@ function mapFiles(stageDir, mod, layout, game) {
       const lua = [...luaRoots].find(root => root === '' ? true : r.startsWith(root + '/'));
       if (lua !== undefined) {
         const rest = lua === '' ? r : r.slice(lua.length + 1);
-        const name = lua === '' ? folder : lua.split('/').pop();
+        const name = lua === '' ? (strip ? strip.slice(0, -1) : store.safeName(mod.name || mod.id).replace(/\s+/g, '')) : lua.split('/').pop();
         add(f, `${ue4ssDir}/Mods/${/^Mods\//i.test(rest) ? rest.slice(5) : name + '/' + rest}`);
         continue;
       }
@@ -262,7 +263,7 @@ function modStoreDir(game, mod) {
   }
   return path.join(parent, want);
 }
-const stageDir = (game, mod) => path.join(modStoreDir(game, mod), store.safeName(String(mod.versionId)));
+const stageDir = (game, mod) => path.join(modStoreDir(game, mod), store.safeName(String(mod.versionId) + (mod.rawLayout ? ' (your files)' : '')));
 
 // version: {id, version, fileName, downloadUrl}; dl: {url, fileName, headers}
 // Two installs can need the same file at once (an update and a dependency of another update):
@@ -280,7 +281,14 @@ function stageMod(game, mod, dl) {
   return once('stage:' + dir.toLowerCase(), () => stageModNow(game, mod, dl, dir));
 }
 async function stageModNow(game, mod, dl, dir) {
-  if (fs.existsSync(path.join(dir, '.staged'))) return dir;
+  if (fs.existsSync(path.join(dir, '.staged'))) {
+    // Same release id as a copy of the user's own files (older naming)? Move that copy aside first.
+    const raw = games.profiles(game.key).flatMap(p => p.mods).find(x => x.uid === `${mod.source}:${mod.id}` && x.rawLayout);
+    if (raw && looksLikeOwnFiles(dir, raw)) {
+      const own = path.join(path.dirname(dir), store.safeName(String(raw.versionId) + ' (your files)'));
+      if (!fs.existsSync(own)) fs.renameSync(dir, own); else fs.rmSync(dir, { recursive: true, force: true });
+    } else return dir;
+  }
   const file = store.root('downloads', store.safeName(mod.source), store.safeName(`${mod.id}-${mod.versionId}-${dl.fileName || 'mod.zip'}`));
   if (!fs.existsSync(file)) await once('dl:' + file.toLowerCase(), () => (fs.existsSync(file) ? Promise.resolve(file) : download(dl.url, file, { name: `${mod.name} ${mod.version || ''}`.trim(), headers: dl.headers })));
   await extract(file, dir);
@@ -291,7 +299,7 @@ async function stageModNow(game, mod, dl, dir) {
 // Local file the user dropped in.
 async function stageFileFor(game, entry, filePath) {
   const st = fs.statSync(filePath);
-  const mod = { ...entry, versionId: 'file-' + Math.round(st.mtimeMs), fileName: path.basename(filePath) };
+  const mod = { ...entry, rawLayout: false, versionId: 'file-' + Math.round(st.mtimeMs), fileName: path.basename(filePath) }; // a download, not the user's own copy
   const dir = stageDir(game, mod);
   await extract(filePath, dir);
   fs.writeFileSync(path.join(dir, '.staged'), new Date().toISOString());
@@ -419,15 +427,32 @@ function findStage(game, m) {
   const parent = path.dirname(dir);
   let vers = [];
   try { vers = fs.readdirSync(parent).filter(v => fs.existsSync(path.join(parent, v, '.staged'))); } catch { }
+  // Older ModHaven filed the user's own files under the plain release id: move them to "<id> (your files)".
+  const legacy = path.join(parent, store.safeName(String(m.versionId)));
+  if (m.rawLayout && legacy !== dir && fs.existsSync(path.join(legacy, '.staged')) && looksLikeOwnFiles(legacy, m)) {
+    try { fs.renameSync(legacy, dir); return dir; } catch { return legacy; }
+  }
   if (m.rawLayout && vers.length === 1) {
     try { fs.renameSync(path.join(parent, vers[0]), dir); return dir; } catch { return path.join(parent, vers[0]); }
   }
   return fs.existsSync(dir) ? dir : null;
 }
 
+// The user's own files are kept with their full game paths (e.g. "RSDragonwilds/Content/..."), downloads aren't.
+function looksLikeOwnFiles(dir, m) {
+  const want = ((m.adopted && m.adopted.files) || m.deployedFiles || []).slice(0, 5);
+  return want.length ? want.some(f => fs.existsSync(path.join(dir, f))) : true;
+}
+
 function deploy(game, profile, { save = true } = {}) {
   if (!game.installPath && resolveLayout(game) !== 'minecraft') throw new Error('Set the game folder first (Game settings)');
   const layout = resolveLayout(game); // before undeploy: removing mods must not change how the game looks
+  if (layout === 'unreal' && game.installPath) {
+    // UE4SS 3.x keeps its files (and script mods) in Binaries/Win64/ue4ss; decide while UE4SS is still in place.
+    const proj = unrealProject(game.installPath);
+    const w = proj && path.join(game.installPath, proj, 'Binaries', 'Win64');
+    game = { ...game, _ue4ssFolder: !!(w && (fs.existsSync(path.join(w, 'ue4ss')) || profile.mods.some(m => m.enabled && /Binaries\/Win64\/ue4ss\//i.test((m.deployedFiles || []).join('\n'))))) };
+  }
   const enabled = profile.mods.filter(m => m.enabled).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   // Safety: never take mods out of the game unless every turned-on mod can be put back.
   const stages = new Map(enabled.map(m => [m.uid, findStage(game, m)]));

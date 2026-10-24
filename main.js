@@ -146,6 +146,14 @@ const handlers = {
     return { ...info, versions: versions.slice(0, 60) };
   },
   'mods:install': async ({ key, profile, source, gameId, modId, versionId }) => mm.install(key, profile, { source, gameId, modId, versionId }),
+  // "Replace with this page's mod": the user chose the page's release over their own copy.
+  'mods:replaceFromPage': async ({ key, profile, uid }) => {
+    const m = games.profile(key, profile).mods.find(x => x.uid === uid);
+    if (!m) throw new Error('Mod not found');
+    const r = await mm.install(key, profile, { source: m.source, gameId: m.gameId, modId: m.id });
+    if (r.manual.length && /nexusmods\.com/.test(r.manual[0].pageUrl || '') && !store.settings().nxmHandler) { store.saveSettings({ nxmHandler: true }); setNxm(true); r.nxmEnabled = true; }
+    return r;
+  },
   'mods:installFileFor': ({ key, profile, uid, path: p }) => mm.installFileFor(key, profile, uid, p),
   'mods:installLocal': async ({ key, profile, paths }) => { const out = []; for (const p of paths) out.push(await mm.installLocal(key, profile, p)); return out; },
   'mods:uninstall': ({ key, profile, uid }) => mm.uninstall(key, profile, uid),
@@ -319,7 +327,7 @@ async function handleNxm(link) {
     const r = await mm.install(g.key, profile, { source: 'nexus', gameId: n.domain, modId: n.modId, versionId: n.fileId, nxm: { key: n.key, expires: n.expires } });
     send('notice', { kind: 'ok', text: `Installed ${r.installed.join(', ') || 'mod'} into ${g.name} / ${profile}` });
     send('profile', { key: g.key, profile });
-  } catch (e) { send('notice', { kind: 'error', text: 'Nexus download failed: ' + e.message }); }
+  } catch (e) { store.log('nxm download failed', link.replace(/key=[^&]+/, 'key=…'), e); send('notice', { kind: 'error', text: 'Nexus download failed: ' + e.message }); }
 }
 
 // ---------- background update checks ----------

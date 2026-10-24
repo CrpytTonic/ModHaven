@@ -653,7 +653,7 @@ function linkEntry(game, profileName, uid, m) {
   if (!e) return;
   const newUid = `${m.source}:${m.modId}`;
   if (p.mods.some(x => x.uid === newUid)) return;
-  const oldDir = installer.stageDir(game, e);
+  const oldDir = installer.findStage(game, e) || installer.stageDir(game, e);
   if (!e.modFolder) e.modFolder = modFolderOf((e.adopted && e.adopted.files) || installer.walkFiles(oldDir));
   Object.assign(e, { uid: newUid, source: m.source, id: String(m.modId), gameId: String(m.gameId), name: m.name, author: m.author || e.author, icon: m.icon || null, url: m.url || null,
     summary: m.summary || e.summary, version: m.version || e.version, versionId: m.versionId ? String(m.versionId) : e.versionId, modUpdatedAt: m.versionDate || null,
@@ -672,7 +672,7 @@ function unlink(game, profileName, uid) {
   const e = p.mods.find(x => x.uid === uid);
   if (!e) throw new Error('Mod not found');
   if (!e.rawLayout) throw new Error('Only mods taken over from the game folder can be unlinked; uninstall this one instead.');
-  const oldDir = installer.stageDir(game, e);
+  const oldDir = installer.findStage(game, e) || installer.stageDir(game, e);
   const files = installer.walkFiles(oldDir).filter(f => f !== '.staged');
   const base = (e.adopted && e.adopted.files && e.adopted.files[0]) || files[0] || e.name;
   const name = prettyName(path.basename(String(base))).replace(/\s+/g, '') || e.name;

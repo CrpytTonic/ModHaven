@@ -107,6 +107,8 @@ async function steamGames() {
           version: st.buildid ? `build ${st.buildid}` : null,
           versionUpdatedAt: st.LastUpdated ? new Date(Number(st.LastUpdated) * 1000).toISOString() : null,
           steamAppId: st.appid,
+          buildId: st.buildid || null,
+          updatePending: !!(st.TargetBuildID && st.buildid && Number(st.TargetBuildID) > Number(st.buildid)),
           art: steamLocalArt(steamPath, st.appid),
         });
       } catch { }

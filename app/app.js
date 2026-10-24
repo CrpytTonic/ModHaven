@@ -596,10 +596,11 @@ function renderHeroMeta() {
   const p = S.profile;
   const el = $('#heroMeta');
   if (!el) return;
-  const layoutName = { bepinex: 'BepInEx', melonloader: 'MelonLoader', data: 'Data folder', minecraft: 'Minecraft mods', root: 'Game folder', custom: 'Custom folder' };
+  const layoutName = { bepinex: 'BepInEx', melonloader: 'MelonLoader', data: 'Data folder', minecraft: 'Minecraft mods', root: 'Game folder', custom: 'Custom folder', unreal: 'Unreal (~mods / UE4SS)' };
   el.innerHTML = `
     ${g.installPath ? `<span class="pill ok" data-tip="${attr(g.installPath)}">✓ Installed${g.store ? ' · ' + esc(g.store[0].toUpperCase() + g.store.slice(1)) : ''}</span>` : `<span class="pill warn">Game folder not set</span>`}
-    ${g.gameVersion ? `<span class="pill" data-tip="Detected game version. When it changes, every mod goes back to “not tested yet” until it runs OK again.">Game ${esc(g.gameVersion)}</span>` : ''}
+    ${g.gameVersion ? `<span class="pill" data-tip="Detected game version${g.publicVersion ? ' (' + esc(g.gameVersion) + ', from the game\'s Steam patch notes)' : ''}. When it changes, every mod goes back to “not tested yet” until it runs OK again.">Game ${esc(g.publicVersion || g.gameVersion)}</span>` : ''}
+    ${g.pendingVersion ? `<span class="pill warn" data-tip="Steam has a newer build of the game waiting to install. Mods may need updates after it.">Game update ${esc(g.pendingVersion)} pending</span>` : g.updatePending ? '<span class="pill warn">Game update pending</span>' : ''}
     ${g.key === 'minecraft' ? `<span class="pill">MC ${esc(g.mcVersion || 'any')} ${esc(g.mcLoader || '')}</span>` : ''}
     <span class="pill">${p ? p.mods.filter(m => m.enabled).length : 0} of ${p ? p.mods.length : 0} mods on</span>
     ${Object.keys(g.sources || {}).map(srcBadge).join('')}`;
@@ -706,7 +707,7 @@ async function gameSettings() {
       <div class="row" style="gap:12px">
         <div class="field" style="flex:1"><label>How mods are installed</label><select class="input" id="fLayout">
           <option value="auto">Automatic</option><option value="bepinex">BepInEx (Unity / Thunderstore)</option><option value="melonloader">MelonLoader</option>
-          <option value="data">Data folder (Skyrim, Fallout…)</option><option value="root">Into the game folder</option><option value="custom">Into a custom folder</option><option value="minecraft">Minecraft mods folder</option></select></div>
+          <option value="data">Data folder (Skyrim, Fallout…)</option><option value="unreal">Unreal Engine (~mods, LogicMods, UE4SS)</option><option value="root">Into the game folder</option><option value="custom">Into a custom folder</option><option value="minecraft">Minecraft mods folder</option></select></div>
         <div class="field" style="flex:1"><label>Custom / Minecraft folder</label><div class="row"><input class="input" style="flex:1" id="fCustom" value="${attr(g.customDir || '')}" placeholder="${isMc ? '%APPDATA%\\.minecraft' : 'Only for “custom folder”'}" spellcheck="false"><button class="btn icon" data-a="pickCustom">${I.folder}</button></div></div>
       </div>
       ${isMc ? `<div class="row" style="gap:12px"><div class="field" style="flex:1"><label>Minecraft version</label><input class="input" id="fMc" value="${attr(g.mcVersion || '')}" placeholder="e.g. 1.21.1"></div>
@@ -750,7 +751,8 @@ async function gameSettings() {
 // INSTALLED TAB
 // ======================================================================
 function statusOf(uid) { return (S.analysis && S.analysis.status[uid]) || { status: 'untested', reasons: ['Not launched yet'] }; }
-const hasUpdate = m => m.latest && String(m.latest.versionId) !== String(m.versionId);
+// A wrong link is never an "update" (Replace with this page's mod is the deliberate way to switch).
+const hasUpdate = m => m.latest && m.versionGuess !== 'mismatch' && String(m.latest.versionId) !== String(m.versionId);
 
 function renderInstalled() {
   const pane = $('#pane-installed');
@@ -909,8 +911,9 @@ async function renderInstalledDetail(uid) {
       <label class="switch" style="margin-top:6px" data-tip="Turn on/off"><input type="checkbox" id="dTog" ${m.enabled ? 'checked' : ''}><i></i></label></div>
     <div class="dbody">
       <div class="facts">
-        <div class="fact"><small>Installed version</small><b class="mono">${m.version && m.version !== 'unknown' ? esc(m.version) : '<span class="muted">unknown</span>'}</b>${m.versionGuess === 'exact file' ? `<span class="muted" style="font-size:11.5px" data-tip="Your files are byte-for-byte the files in this release on the mod page.">exact file match${m.variant && m.variant.title ? ' · ' + esc(m.variant.title) : ''}</span>` : m.versionGuess === 'file date' ? `<span class="muted" style="font-size:11.5px" data-tip="Your files are dated after this release and before any newer one, so this is probably the release you have.">estimated from your files' date</span>` : m.version === 'unknown' && m.source !== 'local' ? '<span class="muted" style="font-size:11.5px">click Check updates to work it out</span>' : ''}</div>
+        <div class="fact"><small>Installed version</small><b class="mono">${m.version && m.version !== 'unknown' ? esc(m.version) : '<span class="muted">unknown</span>'}</b>${m.versionGuess === 'exact file' ? `<span class="muted" style="font-size:11.5px" data-tip="Your files are byte-for-byte the files in this release on the mod page.">exact file match${m.variant && m.variant.title ? ' · ' + esc(m.variant.title) : ''}</span>` : m.versionGuess === 'file date' ? `<span class="muted" style="font-size:11.5px" data-tip="Your files are dated after this release and before any newer one, so this is probably the release you have.">estimated from your files' date</span>` : m.versionGuess === 'mismatch' ? '<span class="muted" style="font-size:11.5px">your own copy (not from this page)</span>' : m.version === 'unknown' && m.source !== 'local' ? '<span class="muted" style="font-size:11.5px">click Check updates to work it out</span>' : ''}</div>
         <div class="fact"><small>Released</small><b title="${attr(fullDate(m.modUpdatedAt))}">${m.modUpdatedAt ? esc(ago(m.modUpdatedAt)) : '<span class="muted">unknown</span>'}</b></div>
+        <div class="fact"><small>Made for game</small><b class="mono">${m.madeFor ? esc(m.madeFor.version) : '<span class="muted">not stated</span>'}</b>${m.madeFor ? `<span class="muted" style="font-size:11.5px" ${m.madeFor.quote ? `data-tip="From the mod page: …${attr(m.madeFor.quote)}…"` : ''}>${m.madeFor.how === 'stated' ? 'stated on the mod page' : m.madeFor.how === 'listed' ? 'listed by the site' : 'from its release date'}${S.game.publicVersion ? ` · your game ${esc(S.game.publicVersion)}` : ''}</span>` : ''}</div>
         <div class="fact"><small>Newest version</small><b class="mono">${m.latest ? esc(m.latest.version) : '<span class="muted">not checked</span>'}</b>${m.latest && m.latest.date ? `<span class="muted" style="font-size:11.5px" title="${attr(fullDate(m.latest.date))}">released ${esc(ago(m.latest.date))}</span>` : ''}</div>
         <div class="fact"><small>Installed</small><b>${esc(ago(m.installedAt))}</b></div>
       </div>
@@ -923,7 +926,7 @@ async function renderInstalledDetail(uid) {
         <button class="btn" data-a="folder">${I.folder}Files</button>
         <button class="btn danger" data-a="remove">${I.trash}Uninstall</button>
       </div>
-      ${m.versionGuess === 'mismatch' ? `<div class="banner bad" style="margin:0"><div class="grow"><b>This is ${m.mismatchBy === 'files' ? '' : 'probably '}the wrong mod page.</b> ${m.mismatchBy === 'files' ? `None of the downloads on this ${esc(srcMeta(m.source).name)} page contain your files.` : `Your files are dated ${esc(new Date(m.fileDate).toLocaleDateString())}, but every release of “${esc(m.name)}” on ${esc(srcMeta(m.source).name)} came out after that, so your files can't be from this page.`} ModHaven won't update it until it's linked correctly.</div><button class="btn sm" data-a="unlink">${I.x}Unlink</button></div>` : ''}
+      ${m.versionGuess === 'mismatch' ? `<div class="banner bad" style="margin:0"><div class="grow"><b>Your files aren't from this page${m.mismatchBy === 'files' ? '' : ' (probably)'}.</b> ${m.mismatchBy === 'files' ? `None of the downloads on this ${esc(srcMeta(m.source).name)} page contain your files.` : `Your files are dated ${esc(new Date(m.fileDate).toLocaleDateString())}, but every release of “${esc(m.name)}” on ${esc(srcMeta(m.source).name)} came out after that, so your files can't be from this page.`} ModHaven won't change it on its own. Keep your copy and <b>Unlink</b>, or <b>Replace</b> it with this page's mod (your files are backed up).</div><div class="row" style="flex-direction:column;gap:6px"><button class="btn sm primary" data-a="replacepage">${I.dl}Replace with this page's mod</button><button class="btn sm" data-a="unlink">${I.x}Unlink</button></div></div>` : ''}
       ${m.adopted ? adoptedNote(m) : ''}
       ${statusCard(uid)}
       <div class="card"><h3>Updates</h3>
@@ -947,6 +950,16 @@ async function renderInstalledDetail(uid) {
       if (a.dataset.a === 'update') await doInstall({ source: m.source, gameId: m.gameId, modId: m.id, versionId: m.latest.versionId }, `${m.name} ${m.latest.version}`);
       if (a.dataset.a === 'versions') versionPicker(m);
       if (a.dataset.a === 'relink') reviewExternal({ only: 'profile:' + m.uid });
+      if (a.dataset.a === 'replacepage') {
+        if (!(await confirmBox('Replace with this page\'s mod?', `Your current files for <b>${esc(m.name)}</b> will be replaced with the newest release from its ${esc(srcMeta(m.source).name)} page. Your files are backed up first, and you can switch back with <b>Change version</b> later.`, 'Replace'))) return;
+        a.disabled = true; a.innerHTML = '<span class="spinner" style="width:14px;height:14px"></span>Working…';
+        try {
+          const r = await call('mods:replaceFromPage', { key: S.game.key, profile: S.profileName, uid });
+          if (r.installed.length) toast(`Replaced with <b>${esc(r.installed.join(', '))}</b> from the mod page.`, 'ok');
+          if (r.manual.length) showApplyResult({ replaced: [], linked: [], tracked: [], failed: [], manual: r.manual.map(x => ({ name: x.name, pageUrl: x.pageUrl, reason: x.reason })), nxmEnabled: r.nxmEnabled });
+          await reloadProfile();
+        } catch (err) { fail(err); a.disabled = false; a.innerHTML = 'Try again'; }
+      }
       if (a.dataset.a === 'unlink') {
         if (!(await confirmBox('Unlink this mod?', `<b>${esc(m.name)}</b> stops being linked to its ${esc(srcMeta(m.source).name)} page. Your files in the game stay exactly as they are; you can link it to the right page afterwards with <b>Find on mod sites</b>.`, 'Unlink'))) return;
         const e2 = await call('external:unlink', { key: S.game.key, profile: S.profileName, uid });

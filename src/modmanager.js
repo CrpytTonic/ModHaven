@@ -6,6 +6,7 @@ const games = require('./games');
 const installer = require('./installer');
 const net = require('./net');
 const launcher = require('./launcher');
+const gv = require('./gameversion');
 
 let SOURCES = [];
 let emit = () => { };
@@ -77,6 +78,7 @@ async function install(key, profileName, { source: sid, gameId, modId, versionId
     return result;
   }
   if (s.noStore) stripStored(entry);
+  const gameList = game.steamAppId ? await gv.steamVersions(game.steamAppId).catch(() => []) : [];
   await installer.stageMod(game, entry, dl);
   profile = games.profile(key, profileName); // re-read: dependencies may have changed it
   const old = profile.mods.find(m => m.uid === uid);
@@ -87,6 +89,15 @@ async function install(key, profileName, { source: sid, gameId, modId, versionId
     ...keep, updatedLocallyAt: new Date().toISOString(), previousVersionId: old ? old.versionId : null, latest: null,
   };
   if (dependencyOf && !(merged.dependencyOf || []).includes(dependencyOf)) merged.dependencyOf = [...(merged.dependencyOf || []), dependencyOf];
+  // Fill in which game version this release is for straight away (site list, page text, or release date).
+  try {
+    const listed = v.gameVersions && v.gameVersions.length ? v.gameVersions : null;
+    const stated = listed ? null : gv.statedGameVersion([v.title, v.description, v.changelog, info.summary, info.description], gameList, versions.map(x => x.version));
+    const est = gv.versionAt(gameList, v.date);
+    merged.madeFor = listed ? { version: listed.slice(0, 6).join(', '), how: 'listed' } : stated ? { version: stated.version, how: 'stated', quote: stated.quote } : est ? { version: est.version, how: 'estimated' } : null;
+    merged.latest = merged.latest || { versionId: String(v.id), version: v.version, date: v.date };
+  } catch { }
+  delete merged.versionGuess; delete merged.mismatchBy; delete merged.fileDate; delete merged.variant;
   profile.mods = old ? profile.mods.map(m => (m.uid === uid ? merged : m)) : [...profile.mods, merged];
   games.saveProfile(key, profile);
   installer.pruneOldVersions(game, merged, store.settings().keepOldVersions);
@@ -257,6 +268,7 @@ async function checkUpdates(key, profileName, { autoInstall } = {}) {
       // Network lookups first; then read, change and save the profile with no waiting in between,
       // so the checks running side by side don't overwrite each other's changes.
       const exPre = m.rawLayout && m.versionGuess !== 'exact file' ? await identifyExact(game, s, m, versions) : null;
+      const gameList = game.steamAppId ? await gv.steamVersions(game.steamAppId) : [];
       const p = games.profile(key, profileName);
       const cur = p.mods.find(x => x.uid === m.uid);
       if (!cur) return;
@@ -291,6 +303,17 @@ async function checkUpdates(key, profileName, { autoInstall } = {}) {
         const newDir = installer.stageDir(game, cur);
         if (oldDir && oldDir !== newDir && !fs.existsSync(newDir)) fs.renameSync(oldDir, newDir);
         m = { ...m, versionId: cur.versionId, version: cur.version, modUpdatedAt: cur.modUpdatedAt };
+      }
+      // Game version the installed release was made for: what the site lists, what the page says, or the
+      // game's public version on the day the release came out.
+      {
+        const inst = versions.find(x => String(x.id) === String(cur.versionId)) || null;
+        const listed = inst && inst.gameVersions && inst.gameVersions.length ? inst.gameVersions : null;
+        const stated = listed ? null : gv.statedGameVersion([inst && inst.title, inst && inst.description, inst && inst.changelog, info && info.summary, info && info.description], gameList, versions.map(x => x.version));
+        const est = gv.versionAt(gameList, cur.modUpdatedAt || (inst && inst.date));
+        cur.madeFor = listed ? { version: listed.slice(0, 6).join(', '), how: 'listed' }
+          : stated ? { version: stated.version, how: 'stated', quote: stated.quote }
+            : est && cur.versionGuess !== 'mismatch' ? { version: est.version, how: 'estimated' } : null;
       }
       games.saveProfile(key, p);
       if (cur.latest && cur.versionGuess === 'exact file') { const lv = versions.find(x => String(x.id) === String(cur.latest.versionId)); if (lv) v = lv; }

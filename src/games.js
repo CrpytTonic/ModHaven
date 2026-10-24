@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const store = require('./store');
 const local = require('./localgames');
+const gv = require('./gameversion');
 
 const gdir = (key, ...p) => store.root('games', store.safeName(key), ...p);
 
@@ -63,8 +64,8 @@ async function refreshVersion(g) {
     version = g.mcVersion || null;
   } else {
     if (g.store === 'steam' || g.steamAppId) {
-      const st = (await local.scan()).find(x => x.store === 'steam' && String(x.steamAppId) === String(g.steamAppId));
-      if (st) { version = st.version; updatedAt = st.versionUpdatedAt; }
+      const st = (await local.scan(true)).find(x => x.store === 'steam' && String(x.steamAppId) === String(g.steamAppId));
+      if (st) { version = st.version; updatedAt = st.versionUpdatedAt; g.updatePending = st.updatePending; }
     }
     if (!version && g.store && g.store !== 'steam') {
       const st = (await local.scan()).find(x => x.store === g.store && x.installPath === g.installPath);
@@ -80,6 +81,15 @@ async function refreshVersion(g) {
     g.gameVersionUpdatedAt = updatedAt || new Date().toISOString();
   }
   if (changed) g.versionChangedNotice = { from, to: version, at: new Date().toISOString() };
+  // The public version number ("1.0.1") from the game's Steam patch notes.
+  if (g.steamAppId) {
+    const list = await gv.steamVersions(g.steamAppId);
+    const at = gv.versionAt(list, g.gameVersionUpdatedAt);
+    g.publicVersion = at ? at.version : null;
+    g.publicVersionDate = at ? at.date : null;
+    const newest = list[0];
+    g.pendingVersion = g.updatePending && newest && (!at || gv.cmp(newest.version, at.version) > 0) ? newest.version : null;
+  }
   return { changed, from, to: version };
 }
 

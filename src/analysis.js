@@ -89,6 +89,9 @@ function analyse(key, profileName) {
         reasons.push(mine.length ? 'Not confirmed working yet' : (all.some(r => inRun(r, m)) ? `Not tested since the game updated to ${ver}` : 'Not launched with this version yet'));
       }
     }
+    if (m.madeFor && game.publicVersion && m.madeFor.how !== 'listed' && gvCmp(m.madeFor.version, game.publicVersion) < 0) {
+      reasons.push(`Made for game ${m.madeFor.version}${m.madeFor.how === 'estimated' ? ' (going by its release date)' : ''}; your game is ${game.publicVersion}. Mods for older game versions can stop working after an update.`);
+    }
     if (m.latest && String(m.latest.versionId) !== String(m.versionId) && st !== 'broken' && isOlderThanGame(m, game)) {
       reasons.push(`Mod release is older than the latest game update (${(game.gameVersionUpdatedAt || '').slice(0, 10)})`);
     }
@@ -97,6 +100,8 @@ function analyse(key, profileName) {
   return { status, pairs, vanillaCrash: vanillaCrash ? vanillaCrash.id : null, gameVersion: ver, lastRun: lastRun ? lastRun.id : null, verdicts };
 }
 
+// Compare the first three parts of a version (1.0.0.4 vs 1.0.1): patch-level builds rarely break mods.
+const gvCmp = (a, b) => require('./gameversion').cmp(String(a).split('.').slice(0, 3).join('.'), String(b).split('.').slice(0, 3).join('.'));
 const workedWithout = (runs, a, b) => runs.some(r => GOOD.has(r.outcome) && r.mods.some(x => x.uid === a) && !r.mods.some(x => x.uid === b));
 const nameOf = (profile, uid) => (profile.mods.find(m => m.uid === uid) || { name: uid.split(':').pop() }).name;
 const depCount = (profile, m) => profile.mods.filter(x => (x.dependencyOf || []).includes(m.uid)).length + profile.mods.filter(x => (m.dependencyOf || []).includes(x.uid)).length;
