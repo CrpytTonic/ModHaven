@@ -166,7 +166,12 @@ const handlers = {
     const [info, versions] = await Promise.all([s.getMod(ctx, gameId, modId), s.getVersions(ctx, gameId, modId).catch(e => { store.log('versions', e); return []; })]);
     return { ...info, versions: versions.slice(0, 60) };
   },
-  'mods:install': async ({ key, profile, source, gameId, modId, versionId }) => mm.install(key, profile, { source, gameId, modId, versionId }),
+  'mods:install': async ({ key, profile, source, gameId, modId, versionId }) => {
+    const r = await mm.install(key, profile, { source, gameId, modId, versionId });
+    // Free Nexus accounts install through the website's "Mod Manager Download" button: make sure that link reaches ModHaven.
+    if (r.manual.some(m => /nexusmods.com/.test(m.pageUrl || '')) && !store.settings().nxmHandler) { store.saveSettings({ nxmHandler: true }); setNxm(true); r.nxmEnabled = true; }
+    return r;
+  },
   // "Replace with this page's mod": the user chose the page's release over their own copy.
   'mods:replaceFromPage': async ({ key, profile, uid }) => {
     const m = modOf(key, profile, uid);

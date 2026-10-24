@@ -1312,8 +1312,8 @@ async function doInstall(req, label, btn) {
     if (r.installed.length) toast(`Installed ${r.installed.map(esc).join(', ')} into <b>${esc(S.profileName)}</b>`, 'ok');
     else if (r.skipped.length && !r.manual.length) toast(`${esc(label)} is already installed.`, 'info');
     for (const mm of r.manual) {
-      const t = toast(`<b>${esc(mm.name)}</b>: ${esc(mm.reason)}${mm.pageUrl ? `<br><a href="${attr(mm.pageUrl)}">Open download page</a> — then drop the file onto ModHaven.` : ''}`, 'warn', 15000);
-      void t;
+      const nexus = /nexusmods.com/.test(mm.pageUrl || '');
+      toast(`<b>${esc(mm.name)}</b>: ${esc(mm.reason)}.${mm.pageUrl ? `<br><a href="${attr(mm.pageUrl)}">Open download page</a>${nexus ? '' : ' — then drop the file onto ModHaven.'}` : ''}${r.nxmEnabled ? '<br>Nexus download links now open in ModHaven.' : ''}`, 'warn', 20000);
     }
     await reloadProfile();
   } catch (e) { fail(e); if (btn) { btn.disabled = false; btn.innerHTML = `${I.dl}Install`; } }

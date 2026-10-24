@@ -336,7 +336,7 @@ module.exports = {
     return {
       manual: true,
       pageUrl: `${modPage(domain, modId)}?tab=files&file_id=${fileId}`,
-      reason: 'Nexus free accounts must click "Mod Manager Download" on the website',
+      reason: 'Nexus only gives direct downloads to Premium accounts. Click "Mod Manager Download" (Files tab) on the page and ModHaven downloads and installs it automatically',
     };
   },
 
