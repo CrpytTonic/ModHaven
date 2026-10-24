@@ -107,6 +107,56 @@ function stripStored(entry) {
   return entry;
 }
 
+// Exact match: the release whose download contains the user's files byte for byte (Nexus publishes
+// a SHA1 for every file in every download). Returns { version } | { mismatch: true } | null (can't tell).
+const MATCH_FILE = /\.(pak|ucas|utoc|dll|asi|lua|jar|esp|esm|esl|bsa|ba2)$/i;
+async function identifyExact(game, s, entry, versions) {
+  const dir = installer.findStage(game, entry);
+  if (!dir) return null;
+  return matchFiles(s, installer.walkFiles(dir).map(f => require('path').join(dir, f)), versions);
+}
+
+// Fingerprints of the files that identify a mod (skips stubs, text and tiny files).
+function fingerprints(absFiles) {
+  const crypto = require('crypto');
+  const set = new Set(absFiles.map(f => f.toLowerCase()));
+  return absFiles.filter(f => MATCH_FILE.test(f))
+    .filter(f => !(/\.pak$/i.test(f) && set.has(f.toLowerCase().replace(/\.pak$/, '.ucas'))))
+    .filter(f => { try { return fs.statSync(f).size >= 1024; } catch { return false; } })
+    .map(f => crypto.createHash('sha1').update(fs.readFileSync(f)).digest('hex'));
+}
+
+async function matchFiles(s, absFiles, versions) {
+  if (!s.manifestFor || !versions || !versions.length) return null;
+  const mine = fingerprints(absFiles);
+  if (!mine.length) return null;
+  const ctx = ctxFor(s);
+  let checked = 0, best = null;
+  for (const v of versions.slice(0, 40)) {
+    const man = await s.manifestFor(ctx, v);
+    if (!man) continue;
+    checked++;
+    const hashes = new Set(man.map(f => f.sha1).filter(Boolean));
+    if (!hashes.size) continue;
+    const hit = mine.filter(h => hashes.has(h)).length;
+    if (hit && (!best || hit > best.hit || (hit === best.hit && String(v.date) > String(best.v.date)))) best = { v, hit };
+    if (hit === mine.length) break; // every file matched: that's the one
+  }
+  if (best && best.hit === mine.length) return { version: best.v };
+  if (best) return { version: best.v, partial: true };
+  // Read every release and none contains any of the user's files: not this mod.
+  if (checked && checked === Math.min(versions.length, 40)) return { mismatch: true };
+  return null;
+}
+
+// Newest release of the same variant (e.g. "NoCarryCapacity" vs "NoCarryCapacityUnlimited" on one page).
+function newestOfVariant(versions, installed) {
+  if (!installed) return null;
+  const fam = v => String(v.title || v.fileName || '').toLowerCase().replace(/[\s_-]*v?\d+([._]\d+)*.*$/, '').replace(/[^a-z0-9]/g, '');
+  const same = versions.filter(v => !v.archived && ((installed.group && v.group === installed.group) || (!installed.group && fam(v) && fam(v) === fam(installed))));
+  return same.sort((a, b) => String(b.date).localeCompare(String(a.date)))[0] || null;
+}
+
 // The installed release of a mod the user installed by hand: the newest release published on or
 // before the date of their files (nobody can have a release from after they got the files).
 function guessByFileDate(game, entry, versions) {
@@ -203,21 +253,47 @@ async function checkUpdates(key, profileName, { autoInstall } = {}) {
     try {
       const ctx = ctxFor(s);
       const [versions, info] = await Promise.all([s.getVersions(ctx, m.gameId, m.id), s.getMod(ctx, m.gameId, m.id).catch(() => null)]);
-      const v = pickVersion(versions, game, null);
+      let v = pickVersion(versions, game, null);
+      // Network lookups first; then read, change and save the profile with no waiting in between,
+      // so the checks running side by side don't overwrite each other's changes.
+      const exPre = m.rawLayout && m.versionGuess !== 'exact file' ? await identifyExact(game, s, m, versions) : null;
       const p = games.profile(key, profileName);
       const cur = p.mods.find(x => x.uid === m.uid);
       if (!cur) return;
       cur.latest = v ? { versionId: String(v.id), version: v.version, date: v.date } : null;
       cur.lastChecked = new Date().toISOString();
       if (info) { cur.deprecated = !!info.deprecated; if (info.icon && !s.noStore) cur.icon = info.icon; }
-      // Mods taken over from the game folder: work out which release the user has from their files' date.
-      const guess = String(cur.versionId).startsWith('adopted-') ? guessByFileDate(game, cur, versions) : null;
-      if (guess && guess.mismatch) { cur.versionGuess = 'mismatch'; cur.fileDate = guess.fileDate; }
+      // Mods taken over from the game folder: find which release the user has. Exact file match first
+      // (also redone for earlier estimates), the files' date as a fallback.
+      let guess = null;
+      if (cur.rawLayout && cur.versionGuess !== 'exact file') {
+        const ex = exPre;
+        if (ex && ex.mismatch) guess = { mismatch: true, how: 'files' };
+        else if (ex && ex.version) guess = { ...ex.version, exact: !ex.partial };
+      }
+      if (!guess && String(cur.versionId).startsWith('adopted-')) guess = guessByFileDate(game, cur, versions);
+      if (guess && !guess.mismatch && guess.exact) {
+        const nv = newestOfVariant(versions, guess);
+        if (nv) cur.latest = { versionId: String(nv.id), version: nv.version, date: nv.date };
+      } else if (cur.versionGuess === 'exact file' && cur.variant) {
+        const nv = newestOfVariant(versions, cur.variant);
+        if (nv) cur.latest = { versionId: String(nv.id), version: nv.version, date: nv.date };
+      }
+      if (guess && guess.mismatch) {
+        // Not this page's files: don't show a version or date taken from it (the stored copy keeps its folder).
+        Object.assign(cur, { versionGuess: 'mismatch', fileDate: guess.fileDate || cur.fileDate || null, mismatchBy: guess.how || 'date', version: 'unknown', modUpdatedAt: null, variant: null });
+      }
       else if (guess) {
-        Object.assign(cur, { versionId: String(guess.id), version: guess.version, modUpdatedAt: guess.date, versionGuess: 'file date' });
+        // The stored copy is filed by version id: move it along, or deploy can't find it.
+        const oldDir = installer.findStage(game, cur);
+        Object.assign(cur, { versionId: String(guess.id), version: guess.version, modUpdatedAt: guess.date, versionGuess: guess.exact ? 'exact file' : 'file date',
+          variant: guess.exact ? { group: guess.group || null, title: guess.title || null, fileName: guess.fileName || null } : cur.variant || null });
+        const newDir = installer.stageDir(game, cur);
+        if (oldDir && oldDir !== newDir && !fs.existsSync(newDir)) fs.renameSync(oldDir, newDir);
         m = { ...m, versionId: cur.versionId, version: cur.version, modUpdatedAt: cur.modUpdatedAt };
       }
       games.saveProfile(key, p);
+      if (cur.latest && cur.versionGuess === 'exact file') { const lv = versions.find(x => String(x.id) === String(cur.latest.versionId)); if (lv) v = lv; }
       const fromFile = String(m.versionId).startsWith('file-') && m.modUpdatedAt && v && v.date && v.date <= m.modUpdatedAt;
       // Never "update" a mod whose link looks wrong: it would replace the user's mod with a different one.
       const wrongLink = cur.versionGuess === 'mismatch';
@@ -250,4 +326,4 @@ async function checkAll() {
   return out;
 }
 
-module.exports = { installFileFor, stripStored, init, ctxFor, source, install, installLocal, uninstall, checkUpdates, checkAll, uidOf, pickVersion };
+module.exports = { matchFiles, installFileFor, stripStored, init, ctxFor, source, install, installLocal, uninstall, checkUpdates, checkAll, uidOf, pickVersion };

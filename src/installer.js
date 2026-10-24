@@ -327,8 +327,8 @@ function fileConflicts(game, profile) {
   const layout = resolveLayout(game);
   const owners = new Map();
   for (const m of profile.mods.filter(x => x.enabled)) {
-    const dir = stageDir(game, m);
-    if (!fs.existsSync(dir)) continue;
+    const dir = findStage(game, m);
+    if (!dir) continue;
     for (const { rel } of mapFiles(dir, m, layout, game)) {
       if (/^BepInEx\/config\//i.test(rel)) continue;
       const k = rel.toLowerCase();
@@ -411,16 +411,34 @@ function linkOrCopy(src, dst, mode, made) {
   fs.copyFileSync(src, dst);
 }
 
+// The stored copy of a mod. If it is filed under another version id (older ModHaven versions could
+// change the id without moving the folder), the only stored version is re-filed under the right id.
+function findStage(game, m) {
+  const dir = stageDir(game, m);
+  if (fs.existsSync(path.join(dir, '.staged'))) return dir;
+  const parent = path.dirname(dir);
+  let vers = [];
+  try { vers = fs.readdirSync(parent).filter(v => fs.existsSync(path.join(parent, v, '.staged'))); } catch { }
+  if (m.rawLayout && vers.length === 1) {
+    try { fs.renameSync(path.join(parent, vers[0]), dir); return dir; } catch { return path.join(parent, vers[0]); }
+  }
+  return fs.existsSync(dir) ? dir : null;
+}
+
 function deploy(game, profile, { save = true } = {}) {
   if (!game.installPath && resolveLayout(game) !== 'minecraft') throw new Error('Set the game folder first (Game settings)');
   const layout = resolveLayout(game); // before undeploy: removing mods must not change how the game looks
+  const enabled = profile.mods.filter(m => m.enabled).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  // Safety: never take mods out of the game unless every turned-on mod can be put back.
+  const stages = new Map(enabled.map(m => [m.uid, findStage(game, m)]));
+  const lost = enabled.filter(m => !stages.get(m.uid)).map(m => m.name);
+  if (lost.length) throw new Error(`ModHaven can't find its copy of ${lost.join(', ')}, so it left the game folder as it is. Turn ${lost.length === 1 ? 'that mod' : 'those mods'} off or reinstall ${lost.length === 1 ? 'it' : 'them'}.`);
   undeploy(game);
   const root = targetRoot(game, layout);
   if (!root || !fs.existsSync(root)) throw new Error('Mod folder not found: ' + root);
   const mode = store.settings().deployMode;
   const files = {};
   const made = new Set();
-  const enabled = profile.mods.filter(m => m.enabled).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   const missing = [];
   // Configs saved from earlier runs of this profile go back first; mods' default configs don't overwrite them.
   const savedCfg = games.pdir(game.key, profile.name, 'config');
@@ -432,8 +450,8 @@ function deploy(game, profile, { save = true } = {}) {
     }
   }
   for (const m of enabled) {
-    const dir = stageDir(game, m);
-    if (!fs.existsSync(dir)) { missing.push(m.name); continue; }
+    const dir = stages.get(m.uid);
+    if (!dir) { missing.push(m.name); continue; }
     const owned = [];
     for (const { src, rel } of mapFiles(dir, m, layout, game)) {
       if (cfgRels.has(rel.toLowerCase())) continue;
@@ -475,5 +493,5 @@ function ownerOf(game, fileName) {
   return null;
 }
 
-module.exports = { modFolderOf, modStoreDir, stageFileFor, unrealProject, setEmitter, download, markDownload, clearDownloads, dlState, extract, stageMod, stageLocal, stageDir,
+module.exports = { findStage, modFolderOf, modStoreDir, stageFileFor, unrealProject, setEmitter, download, markDownload, clearDownloads, dlState, extract, stageMod, stageLocal, stageDir,
   pruneOldVersions, deploy, undeploy, deployedInfo, fileConflicts, resolveLayout, targetRoot, mapFiles, ownerOf, walkFiles, find7z };

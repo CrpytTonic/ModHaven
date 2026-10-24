@@ -476,6 +476,18 @@ async function fillMatches(game, pairs, mm) {
       const vs = await s.getVersions(mm.ctxFor(s), m.gameId, m.modId).catch(() => []);
       const latest = mm.pickVersion(vs, game, null);
       m.latest = latest ? { versionId: String(latest.id), version: latest.version, date: latest.date } : null;
+      // Check the candidate against the user's actual files (sites that publish per-file hashes).
+      if (c && c.files && c.files.length && s.manifestFor && m.how !== 'exact file') {
+        const base = c.root || installer.targetRoot(game, installer.resolveLayout(game));
+        const ex = await mm.matchFiles(s, c.files.map(f => path.join(base, f)), vs);
+        if (ex && ex.version && !ex.partial) {
+          Object.assign(m, { how: 'exact file', score: 1, versionId: String(ex.version.id), version: ex.version.version, versionDate: ex.version.date });
+        } else if (ex && ex.mismatch) {
+          m.filesDiffer = true; // same name maybe, but not these files
+          if (m.how === 'name') m.how = 'similar';
+          m.score = Math.min(m.score || 1, 0.6);
+        }
+      }
       if (!m.versionId && c && c.version) {
         // Same version written differently: "v1.2.0" = "1.2", "1.2+build.5", Thunderstore's BepInEx "5.4.21" = "5.4.2100".
         const norm = x => String(x || '').trim().replace(/^v/i, '').replace(/(\.0)+$/, '');

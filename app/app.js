@@ -909,7 +909,7 @@ async function renderInstalledDetail(uid) {
       <label class="switch" style="margin-top:6px" data-tip="Turn on/off"><input type="checkbox" id="dTog" ${m.enabled ? 'checked' : ''}><i></i></label></div>
     <div class="dbody">
       <div class="facts">
-        <div class="fact"><small>Installed version</small><b class="mono">${m.version && m.version !== 'unknown' ? esc(m.version) : '<span class="muted">unknown</span>'}</b>${m.versionGuess === 'file date' ? `<span class="muted" style="font-size:11.5px" data-tip="Your files are dated after this release and before any newer one, so this is the release you have.">matched by your files' date</span>` : m.version === 'unknown' && m.source !== 'local' ? '<span class="muted" style="font-size:11.5px">click Check updates to work it out</span>' : ''}</div>
+        <div class="fact"><small>Installed version</small><b class="mono">${m.version && m.version !== 'unknown' ? esc(m.version) : '<span class="muted">unknown</span>'}</b>${m.versionGuess === 'exact file' ? `<span class="muted" style="font-size:11.5px" data-tip="Your files are byte-for-byte the files in this release on the mod page.">exact file match${m.variant && m.variant.title ? ' · ' + esc(m.variant.title) : ''}</span>` : m.versionGuess === 'file date' ? `<span class="muted" style="font-size:11.5px" data-tip="Your files are dated after this release and before any newer one, so this is probably the release you have.">estimated from your files' date</span>` : m.version === 'unknown' && m.source !== 'local' ? '<span class="muted" style="font-size:11.5px">click Check updates to work it out</span>' : ''}</div>
         <div class="fact"><small>Released</small><b title="${attr(fullDate(m.modUpdatedAt))}">${m.modUpdatedAt ? esc(ago(m.modUpdatedAt)) : '<span class="muted">unknown</span>'}</b></div>
         <div class="fact"><small>Newest version</small><b class="mono">${m.latest ? esc(m.latest.version) : '<span class="muted">not checked</span>'}</b>${m.latest && m.latest.date ? `<span class="muted" style="font-size:11.5px" title="${attr(fullDate(m.latest.date))}">released ${esc(ago(m.latest.date))}</span>` : ''}</div>
         <div class="fact"><small>Installed</small><b>${esc(ago(m.installedAt))}</b></div>
@@ -923,7 +923,7 @@ async function renderInstalledDetail(uid) {
         <button class="btn" data-a="folder">${I.folder}Files</button>
         <button class="btn danger" data-a="remove">${I.trash}Uninstall</button>
       </div>
-      ${m.versionGuess === 'mismatch' ? `<div class="banner bad" style="margin:0"><div class="grow"><b>This is probably the wrong mod page.</b> Your files are dated ${esc(new Date(m.fileDate).toLocaleDateString())}, but every release of “${esc(m.name)}” on ${esc(srcMeta(m.source).name)} came out after that, so your files can't be from this page. ModHaven won't update it until it's linked correctly.</div><button class="btn sm" data-a="unlink">${I.x}Unlink</button></div>` : ''}
+      ${m.versionGuess === 'mismatch' ? `<div class="banner bad" style="margin:0"><div class="grow"><b>This is ${m.mismatchBy === 'files' ? '' : 'probably '}the wrong mod page.</b> ${m.mismatchBy === 'files' ? `None of the downloads on this ${esc(srcMeta(m.source).name)} page contain your files.` : `Your files are dated ${esc(new Date(m.fileDate).toLocaleDateString())}, but every release of “${esc(m.name)}” on ${esc(srcMeta(m.source).name)} came out after that, so your files can't be from this page.`} ModHaven won't update it until it's linked correctly.</div><button class="btn sm" data-a="unlink">${I.x}Unlink</button></div>` : ''}
       ${m.adopted ? adoptedNote(m) : ''}
       ${statusCard(uid)}
       <div class="card"><h3>Updates</h3>
@@ -1330,7 +1330,7 @@ function extRow(it, st, g) {
         <div class="row" style="gap:6px;flex-wrap:wrap"><b class="ext-name">${esc(mt.name)}</b>${srcBadge(mt.source)}<span class="pill ${hc}">${esc(ht)}</span></div>
         <div class="muted" style="font-size:12.5px">${mt.author ? 'by ' + esc(mt.author) + ' · ' : ''}${mt.version ? `you have ${esc(mt.version)}` : 'your version unknown'}${mt.latest ? ` · newest ${esc(mt.latest.version || '')}` : ''}${state}</div>
         ${picker}
-        ${mt.how === 'similar' ? '<div class="muted" style="font-size:12px;margin-top:4px">Not an exact name match. Check it is the same mod (open the page) before ticking it.</div>' : ''}</div>
+        ${mt.filesDiffer ? '<div class="muted" style="font-size:12px;margin-top:4px;color:var(--yellow)">None of the downloads on this page contain your files: probably a different mod (or a different version of it from somewhere else).</div>' : mt.how === 'similar' ? '<div class="muted" style="font-size:12px;margin-top:4px">Not an exact name match. Check it is the same mod (open the page) before ticking it.</div>' : ''}</div>
       ${mt.url ? `<a class="btn sm ghost" href="${attr(mt.url)}" data-tip="Open on the website">${I.ext}</a>` : ''}`;
   } else {
     const sites = Object.keys(g.sources || {}).map(id => esc(srcMeta(id).name)).join(', ') || 'any mod site';

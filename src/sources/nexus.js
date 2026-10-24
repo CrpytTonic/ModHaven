@@ -104,6 +104,8 @@ function mapV1File(f) {
     gameVersions: [],
     loaders: [],
     fileName: f.file_name || null,
+    manifestUrl: f.content_preview_link || null,
+    group: null,
     size: f.size_in_bytes != null ? num(f.size_in_bytes) : (f.size_kb != null ? num(f.size_kb) * 1024 : null),
     downloadUrl: null,
     changelog: f.changelog_html || null,
@@ -143,6 +145,19 @@ module.exports = {
   keylessBrowse: true, // listGames/listMods/getMod/getVersions work without a key (GraphQL v2); downloads need it
   keyHelp: KEY_HELP,
   parseNxm,
+  // Files inside one download: [{ path, size, sha1 }]. Public, no key needed.
+  async manifestFor(ctx, version) {
+    if (!version || !version.manifestUrl) return null;
+    try {
+      const j = await ctx.fetchJson(version.manifestUrl, { ttl: 24 * 3600 * 1000, retries: 1 });
+      if (Array.isArray(j.files)) return j.files.map(f => ({ path: f.file_path, size: f.file_size, sha1: f.file_hashes && f.file_hashes.SHA1 ? String(f.file_hashes.SHA1).toLowerCase() : null }));
+      // older "content preview" format: a tree of { name, type, size, children }
+      const out = [];
+      const walk = (n, pre) => { for (const c of n.children || []) { const p = pre ? pre + '/' + c.name : c.name; if (c.type === 'directory') walk(c, p); else out.push({ path: p, size: c.size || null, sha1: null }); } };
+      walk(j, '');
+      return out;
+    } catch { return null; }
+  },
 
   async listGames(ctx) {
     const TTL = 12 * 3600 * 1000;
@@ -225,7 +240,7 @@ module.exports = {
     try {
       const gid = await gameNumId(ctx, domain);
       const d = await gql(ctx, `query($m:ID!,$g:ID!){
-        modFiles(modId:$m, gameId:$g){ fileId name version category date sizeInBytes size primary uri changelogText description }
+        modFiles(modId:$m, gameId:$g){ fileId groupId name version category date sizeInBytes size primary uri changelogText description }
         mod(modId:$m, gameId:$g){ modRequirements{ nexusRequirements{ nodes{ modId modName gameId externalRequirement url } } } }
       }`, { m: String(modId), g: String(gid) }, 5 * 60 * 1000);
       files = (d.modFiles || []).map(f => {
@@ -240,7 +255,10 @@ module.exports = {
           date: iso(f.date),
           gameVersions: [],
           loaders: [],
-          fileName: f.uri || null,
+          fileName: f.name || null,
+          // uri = path of the public list of files inside this download (with SHA1 per file)
+          manifestUrl: f.uri ? `https://mod-file-manifests.nexusmods.com/${f.uri}` : null,
+          group: f.groupId != null ? String(f.groupId) : null,
           size: f.sizeInBytes != null ? num(f.sizeInBytes) : (f.size != null ? num(f.size) * 1024 : null),
           downloadUrl: null,
           changelog: Array.isArray(f.changelogText) && f.changelogText.length ? f.changelogText.join('\n') : null,
