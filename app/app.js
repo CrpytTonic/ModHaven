@@ -826,7 +826,7 @@ function drawInstalledList() {
         <span data-tipuid="${attr(m.uid)}">${tri(st.status)}</span>
         <label class="switch" data-stop="1"><input type="checkbox" ${m.enabled ? 'checked' : ''} data-toggle="${attr(m.uid)}"><i></i></label>
         ${img(m.icon, 'mico')}
-        <div class="mmain"><div class="mtop"><span class="mname">${esc(m.name)}</span>${srcBadge(m.source)}${hasUpdate(m) ? `<span class="pill info" data-tip="New version ${attr(m.latest.version)}">${I.up.replace('<svg', '<svg width="12" height="12" style="fill:none;stroke:currentColor;stroke-width:2.4"')}${esc(m.latest.version)}</span>` : ''}${(m.dependencyOf || []).length ? '<span class="pill" data-tip="Installed because another mod needs it">library</span>' : ''}</div>
+        <div class="mmain"><div class="mtop"><span class="mname">${esc(m.name)}</span>${srcBadge(m.source)}${hasUpdate(m) ? `<span class="pill info" data-tip="New version ${attr(m.latest.version)}">${I.up.replace('<svg', '<svg width="12" height="12" style="fill:none;stroke:currentColor;stroke-width:2.4"')}${esc(m.latest.version)}</span>` : ''}${(m.dependencyOf || []).length ? '<span class="pill" data-tip="Installed because another mod needs it">library</span>' : ''}${m.versionGuess === 'mismatch' ? '<span class="pill bad" data-tip="Your files are older than every release on this page: probably linked to the wrong mod">check link</span>' : ''}</div>
           <div class="msum">${esc(m.summary || (m.author ? 'by ' + m.author : ''))}</div></div>
         <div class="mside"><span class="v">${esc(m.version || '')}</span><span title="${attr(fullDate(m.modUpdatedAt))}">${esc(ago(m.modUpdatedAt))}</span></div></div>`;
     }).join('') : `<div class="list-end">${S.profile.mods.length ? 'No mods match this filter.' : 'Nothing installed yet.'}</div>`;
@@ -909,9 +909,9 @@ async function renderInstalledDetail(uid) {
       <label class="switch" style="margin-top:6px" data-tip="Turn on/off"><input type="checkbox" id="dTog" ${m.enabled ? 'checked' : ''}><i></i></label></div>
     <div class="dbody">
       <div class="facts">
-        <div class="fact"><small>Installed version</small><b class="mono">${esc(m.version || '—')}</b></div>
-        <div class="fact"><small>Last updated</small><b title="${attr(fullDate(m.modUpdatedAt))}">${esc(ago(m.modUpdatedAt))}</b></div>
-        <div class="fact"><small>Newest version</small><b class="mono">${m.latest ? esc(m.latest.version) : '<span class="muted">not checked</span>'}</b></div>
+        <div class="fact"><small>Installed version</small><b class="mono">${m.version && m.version !== 'unknown' ? esc(m.version) : '<span class="muted">unknown</span>'}</b>${m.versionGuess === 'file date' ? `<span class="muted" style="font-size:11.5px" data-tip="Your files are dated after this release and before any newer one, so this is the release you have.">matched by your files' date</span>` : m.version === 'unknown' && m.source !== 'local' ? '<span class="muted" style="font-size:11.5px">click Check updates to work it out</span>' : ''}</div>
+        <div class="fact"><small>Released</small><b title="${attr(fullDate(m.modUpdatedAt))}">${m.modUpdatedAt ? esc(ago(m.modUpdatedAt)) : '<span class="muted">unknown</span>'}</b></div>
+        <div class="fact"><small>Newest version</small><b class="mono">${m.latest ? esc(m.latest.version) : '<span class="muted">not checked</span>'}</b>${m.latest && m.latest.date ? `<span class="muted" style="font-size:11.5px" title="${attr(fullDate(m.latest.date))}">released ${esc(ago(m.latest.date))}</span>` : ''}</div>
         <div class="fact"><small>Installed</small><b>${esc(ago(m.installedAt))}</b></div>
       </div>
       <div class="dactions">
@@ -923,6 +923,7 @@ async function renderInstalledDetail(uid) {
         <button class="btn" data-a="folder">${I.folder}Files</button>
         <button class="btn danger" data-a="remove">${I.trash}Uninstall</button>
       </div>
+      ${m.versionGuess === 'mismatch' ? `<div class="banner bad" style="margin:0"><div class="grow"><b>This is probably the wrong mod page.</b> Your files are dated ${esc(new Date(m.fileDate).toLocaleDateString())}, but every release of “${esc(m.name)}” on ${esc(srcMeta(m.source).name)} came out after that, so your files can't be from this page. ModHaven won't update it until it's linked correctly.</div><button class="btn sm" data-a="unlink">${I.x}Unlink</button></div>` : ''}
       ${m.adopted ? adoptedNote(m) : ''}
       ${statusCard(uid)}
       <div class="card"><h3>Updates</h3>

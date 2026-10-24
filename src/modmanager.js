@@ -107,6 +107,27 @@ function stripStored(entry) {
   return entry;
 }
 
+// The installed release of a mod the user installed by hand: the newest release published on or
+// before the date of their files (nobody can have a release from after they got the files).
+function guessByFileDate(game, entry, versions) {
+  if (!versions || !versions.length) return null;
+  let newest = 0;
+  try {
+    const dir = installer.stageDir(game, entry);
+    for (const f of installer.walkFiles(dir)) {
+      if (f === '.staged' || /\.(txt|md|ini|json|cfg|log)$/i.test(f)) continue;
+      newest = Math.max(newest, fs.statSync(require('path').join(dir, f)).mtimeMs);
+    }
+  } catch { return null; }
+  if (!newest) return null;
+  const limit = newest + 36e5; // allow an hour for clock / time-zone rounding
+  const before = versions.filter(v => v.date && Date.parse(v.date) <= limit && !v.archived)
+    .sort((a, b) => Date.parse(b.date) - Date.parse(a.date));
+  // Every release is newer than the user's files: their files can't be this mod (a wrong link).
+  if (!before.length && versions.some(v => v.date)) return { mismatch: true, fileDate: new Date(newest).toISOString() };
+  return before[0] || null;
+}
+
 // If this profile is the one currently in the game folder, put the change there now,
 // so starting the game outside ModHaven (e.g. from Steam) also gets the updated files.
 function refreshDeployed(key, profileName) {
@@ -189,9 +210,18 @@ async function checkUpdates(key, profileName, { autoInstall } = {}) {
       cur.latest = v ? { versionId: String(v.id), version: v.version, date: v.date } : null;
       cur.lastChecked = new Date().toISOString();
       if (info) { cur.deprecated = !!info.deprecated; if (info.icon && !s.noStore) cur.icon = info.icon; }
+      // Mods taken over from the game folder: work out which release the user has from their files' date.
+      const guess = String(cur.versionId).startsWith('adopted-') ? guessByFileDate(game, cur, versions) : null;
+      if (guess && guess.mismatch) { cur.versionGuess = 'mismatch'; cur.fileDate = guess.fileDate; }
+      else if (guess) {
+        Object.assign(cur, { versionId: String(guess.id), version: guess.version, modUpdatedAt: guess.date, versionGuess: 'file date' });
+        m = { ...m, versionId: cur.versionId, version: cur.version, modUpdatedAt: cur.modUpdatedAt };
+      }
       games.saveProfile(key, p);
       const fromFile = String(m.versionId).startsWith('file-') && m.modUpdatedAt && v && v.date && v.date <= m.modUpdatedAt;
-      if (v && !fromFile && String(v.id) !== String(m.versionId) && (!m.modUpdatedAt || !v.date || v.date >= m.modUpdatedAt)) {
+      // Never "update" a mod whose link looks wrong: it would replace the user's mod with a different one.
+      const wrongLink = cur.versionGuess === 'mismatch';
+      if (v && !fromFile && !wrongLink && String(v.id) !== String(m.versionId) && (!m.modUpdatedAt || !v.date || v.date >= m.modUpdatedAt)) {
         const allow = m.autoUpdate === true || (m.autoUpdate !== false && auto && !m.pinned);
         if (allow) {
           const res = await install(key, profileName, { source: m.source, gameId: m.gameId, modId: m.id, versionId: v.id });
